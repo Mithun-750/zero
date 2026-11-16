@@ -70,7 +70,7 @@ def generate_single_order() -> dict[str, Any]:
             "customer_email": fake.email(),
         },
         "total_amount": total_amount,
-        "currency": "USD",
+        "currency": "INR",
         "status": "CREATED",
         "created_at": order_timestamp,
         "items": items,

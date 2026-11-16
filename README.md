@@ -1,4 +1,4 @@
-# Transactional Outbox Pattern - Learning Project (Orders & Payments)
+# Transactional Outbox Pattern
 
 This project establishes the foundation of the **Transactional Outbox Pattern** for an e-commerce order management and payment workflow.
 
@@ -32,7 +32,7 @@ When an order is placed, instead of writing to the database and directly calling
                                   |
                                   v
                             [Kafka Topic]
-                       (order.events / payments)
+                           (orders.created)
                                   |
                                   v
                           [Payment Service]
