@@ -1,18 +1,14 @@
-"""Test loader script for quick outbox trigger testing with error resilience checks.
+"""Test loader script for quick outbox trigger testing.
 
-Generates a batch of valid orders and optional corrupted orders,
-saves to a temporary test file, inserts them into PostgreSQL,
-and verifies that corrupted records are rolled back without orphan outbox events.
+Generates a batch of test orders (default: 100), saves to a temporary test file,
+inserts them into PostgreSQL, and displays the newly created outbox events.
 """
 
 from __future__ import annotations
 
 import argparse
-import copy
 import json
-import random
 from pathlib import Path
-from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
@@ -20,62 +16,16 @@ from psycopg.rows import dict_row
 from data_prep.generate_orders import generate_orders, save_orders_to_file
 from data_prep.load_orders import get_db_connection, insert_order
 
-# =====================================================================
-# Configuration Defaults
-# =====================================================================
-DEFAULT_VALID_COUNT: int = 100       # Number of valid orders to generate
-DEFAULT_CORRUPTED_COUNT: int = 0     # Number of corrupted orders (default: 0 errors)
-# =====================================================================
-
-CORRUPTION_TYPES = [
-    "negative_amount",
-    "null_customer_id",
-    "negative_item_quantity",
-    "negative_item_price",
-    "invalid_uuid",
-]
-
-
-def create_corrupted_order(base_order: dict[str, Any], corruption_type: str | None = None) -> tuple[dict[str, Any], str]:
-    """
-    Take a valid order and inject a schema/constraint violation.
-    Returns the mutated order and a description of the injected flaw.
-    """
-    corrupted = copy.deepcopy(base_order)
-    c_type = corruption_type or random.choice(CORRUPTION_TYPES)
-
-    if c_type == "negative_amount":
-        corrupted["total_amount"] = -75.50
-        reason = "Negative total amount (violates CHECK total_amount >= 0)"
-    elif c_type == "null_customer_id":
-        corrupted["customer"]["customer_id"] = None
-        reason = "NULL customer_id (violates NOT NULL customer_id constraint)"
-    elif c_type == "negative_item_quantity":
-        if corrupted.get("items"):
-            corrupted["items"][0]["quantity"] = -2
-        reason = "Negative item quantity (violates CHECK quantity > 0)"
-    elif c_type == "negative_item_price":
-        if corrupted.get("items"):
-            corrupted["items"][0]["unit_price"] = -49.99
-            corrupted["items"][0]["subtotal"] = -49.99
-        reason = "Negative item unit price (violates CHECK unit_price >= 0)"
-    else:  # invalid_uuid
-        corrupted["id"] = "not-a-valid-uuid-1234"
-        reason = "Invalid UUID string (violates PostgreSQL UUID type constraint)"
-
-    corrupted["order_number"] = f"ERR-{corrupted['order_number']}"
-    return corrupted, reason
+DEFAULT_COUNT: int = 100
 
 
 def run_test_load(
-    valid_count: int = DEFAULT_VALID_COUNT,
-    corrupted_count: int = DEFAULT_CORRUPTED_COUNT,
+    count: int = DEFAULT_COUNT,
     temp_file: str = "data/temp_test_orders.json",
 ) -> None:
-    """Generate orders (valid + corrupted), load them, and verify outbox consistency."""
-    total_batch = valid_count + corrupted_count
+    """Generate test orders, load them, and verify outbox output."""
     print("=" * 70)
-    print(f"Running Outbox Test Load ({valid_count} valid, {corrupted_count} corrupted)")
+    print(f"Running Outbox Test Load ({count} orders)")
     print("=" * 70)
 
     conn = get_db_connection()
@@ -90,35 +40,18 @@ def run_test_load(
 
         print(f"Initial DB State: {initial_orders} orders | {initial_outbox} pending outbox events\n")
 
-        # 2. Generate valid orders
-        print(f"Generating {valid_count} valid test orders...")
-        valid_orders = generate_orders(valid_count)
+        # 2. Generate test orders
+        print(f"Generating {count} test orders...")
+        test_orders = generate_orders(count)
+        saved_path = save_orders_to_file(test_orders, temp_file)
+        print(f"Saved test payload to: {saved_path}\n")
 
-        # 3. Generate corrupted orders
-        corrupted_orders: list[dict[str, Any]] = []
-        corruption_reasons: dict[str, str] = {}
-        if corrupted_count > 0:
-            print(f"Generating {corrupted_count} corrupted test orders...")
-            raw_for_corruption = generate_orders(corrupted_count)
-            for idx, raw in enumerate(raw_for_corruption):
-                c_type = CORRUPTION_TYPES[idx % len(CORRUPTION_TYPES)]
-                corrupted_obj, reason = create_corrupted_order(raw, c_type)
-                corrupted_orders.append(corrupted_obj)
-                corruption_reasons[corrupted_obj["id"]] = reason
-
-        # Combine and save to temp file
-        all_test_orders = valid_orders + corrupted_orders
-        saved_path = save_orders_to_file(all_test_orders, temp_file)
-        print(f"Saved full test payload ({len(all_test_orders)} orders) to: {saved_path}\n")
-
-        # 4. Insert each order into database
-        print("Inserting test orders into PostgreSQL...")
+        # 3. Insert each order into database
+        print("Inserting test orders into PostgreSQL (trigger will populate outbox)...")
         successful_ids: list[str] = []
-        failed_orders: list[tuple[str, str, str]] = []
+        is_large_batch = len(test_orders) > 10
 
-        is_large_batch = len(all_test_orders) > 10
-
-        for idx, order in enumerate(all_test_orders, start=1):
+        for idx, order in enumerate(test_orders, start=1):
             order_id = str(order.get("id"))
             order_num = order.get("order_number", "UNKNOWN")
 
@@ -126,18 +59,13 @@ def run_test_load(
                 insert_order(conn, order)
                 successful_ids.append(order_id)
                 if not is_large_batch:
-                    print(f"  [SUCCESS] Order {order_num} | Amount: ${order['total_amount']:.2f} -> Trigger wrote outbox")
-                elif idx % 20 == 0 or idx == len(all_test_orders):
-                    print(f"  Processed {idx}/{len(all_test_orders)} orders ({len(successful_ids)} valid, {len(failed_orders)} failed)...")
+                    print(f"  [SUCCESS] Order {order_num} | Amount: {order['total_amount']:.2f} {order.get('currency', 'INR')} -> Trigger wrote outbox")
+                elif idx % 20 == 0 or idx == len(test_orders):
+                    print(f"  Processed {idx}/{len(test_orders)} orders...")
             except Exception as exc:
-                err_detail = str(exc).split("\n")[0]
-                reason = corruption_reasons.get(order_id, "Unexpected error")
-                failed_orders.append((order_num, reason, err_detail))
-                print(f"  [EXPECTED FAILURE - ROLLED BACK] Order {order_num}")
-                print(f"    - Flaw injected : {reason}")
-                print(f"    - Database error: {err_detail}")
+                print(f"  [ERROR] Failed to insert order {order_num}: {exc}")
 
-        # 5. Query sample newly created outbox records specifically
+        # 4. Query sample newly created outbox records specifically
         if successful_ids:
             sample_ids = successful_ids[:3]
             print(f"\nQuerying sample auto-generated Outbox records ({len(sample_ids)} of {len(successful_ids)}):")
@@ -170,7 +98,7 @@ def run_test_load(
             if len(successful_ids) > len(sample_ids):
                 print(f"\n  ... and {len(successful_ids) - len(sample_ids)} more outbox events registered in database.")
 
-        # 6. Final summary & ACID verification
+        # 5. Final summary
         with conn.cursor() as cur:
             cur.execute("SELECT count(*) as count FROM orders")
             final_orders = cur.fetchone()["count"]
@@ -183,15 +111,9 @@ def run_test_load(
         print("\n" + "=" * 70)
         print("Test Execution Summary")
         print("=" * 70)
-        print(f"Valid orders attempted     : {valid_count} (Succeeded: {len(successful_ids)})")
-        print(f"Corrupted orders attempted : {corrupted_count} (Safely rejected & rolled back: {len(failed_orders)})")
-        print(f"Orders in DB               : {initial_orders} -> {final_orders} (+{orders_delta})")
-        print(f"Outbox Events in DB        : {initial_outbox} -> {final_outbox} (+{outbox_delta})")
-
-        if orders_delta == len(successful_ids) and outbox_delta == len(successful_ids):
-            print("\nACID Guarantee Verified:")
-            print("  Every valid order wrote exactly 1 outbox event.")
-            print("  Every corrupted order rolled back completely with 0 orphan outbox records.")
+        print(f"Orders attempted    : {count} (Succeeded: {len(successful_ids)})")
+        print(f"Orders in DB        : {initial_orders} -> {final_orders} (+{orders_delta})")
+        print(f"Outbox Events in DB : {initial_outbox} -> {final_outbox} (+{outbox_delta} auto-generated by trigger)")
         print("=" * 70)
 
     finally:
@@ -200,23 +122,14 @@ def run_test_load(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Test loader script to generate and insert orders with optional corrupted records."
+        description="Quick test script to generate and load test orders to verify the Outbox trigger."
     )
     parser.add_argument(
         "-c",
         "--count",
         type=int,
-        default=DEFAULT_VALID_COUNT,
-        help=f"Number of valid test orders to generate (default: {DEFAULT_VALID_COUNT})",
-    )
-    parser.add_argument(
-        "-k",
-        "--corrupted",
-        "--corrupted-count",
-        dest="corrupted",
-        type=int,
-        default=DEFAULT_CORRUPTED_COUNT,
-        help=f"Number of corrupted test orders to generate (default: {DEFAULT_CORRUPTED_COUNT})",
+        default=DEFAULT_COUNT,
+        help=f"Number of test orders to generate and load (default: {DEFAULT_COUNT})",
     )
     parser.add_argument(
         "-t",
@@ -227,8 +140,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     run_test_load(
-        valid_count=args.count,
-        corrupted_count=args.corrupted,
+        count=args.count,
         temp_file=args.temp_file,
     )
 

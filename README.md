@@ -120,19 +120,19 @@ Or generate and load directly on the fly:
 uv run load-orders -g 1000
 ```
 
-### 4. Quick Test Runner (Valid + Corrupted Records Verification)
+### 4. Quick Test Runner
 
-To test the database trigger with a small test batch (default: 100 orders, 0 errors):
+To test the database trigger with a test batch (default: 100 orders):
 
 ```bash
 cd data-prep
 uv sync
 
-# Default: 100 valid orders + 0 corrupted orders
+# Default: 100 test orders
 uv run test-load
 
-# Custom counts: e.g. 100 valid and 3 corrupted orders
-uv run test-load -c 100 -k 3
+# Custom count: e.g. 20 orders
+uv run test-load -c 20
 ```
 
 ### 5. Verify in PostgreSQL
