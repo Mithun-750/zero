@@ -1,0 +1,25 @@
+[project]
+name = "data-prep"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Mithun", email = "116871732+Mithun-750@users.noreply.github.com" }
+]
+requires-python = ">=3.15"
+dependencies = [
+    "faker>=40.54.0",
+    "psycopg>=3.3.9",
+    "psycopg-binary>=3.3.9",
+    "python-dotenv>=1.2.4",
+]
+
+[project.scripts]
+data-prep = "data_prep:main"
+generate-orders = "data_prep.generate_orders:main"
+load-orders = "data_prep.load_orders:main"
+test-load = "data_prep.test_load:main"
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"
