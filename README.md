@@ -121,9 +121,7 @@ uv run load-orders -g 1000
 ```
 
 ### 4. Quick Test Runner
-### 4. Quick Test Runner
 
-To test the database trigger with a test batch (default: 100 orders):
 To test the database trigger with a test batch (default: 100 orders):
 
 ```bash
@@ -131,11 +129,8 @@ cd data-prep
 uv sync
 
 # Default: 100 test orders
-# Default: 100 test orders
 uv run test-load
 
-# Custom count: e.g. 20 orders
-uv run test-load -c 20
 # Custom count: e.g. 20 orders
 uv run test-load -c 20
 ```
