@@ -77,7 +77,7 @@ def generate_single_order() -> dict[str, Any]:
     }
 
 
-def generate_orders(count: int = 10) -> list[dict[str, Any]]:
+def generate_orders(count: int = 1000) -> list[dict[str, Any]]:
     """Generate multiple synthetic orders."""
     return [generate_single_order() for _ in range(count)]
 
@@ -94,7 +94,7 @@ def save_orders_to_file(orders: list[dict[str, Any]], filepath: str | Path) -> P
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate synthetic orders for Outbox pattern demonstration.")
     parser.add_argument(
-        "-c", "--count", type=int, default=10, help="Number of orders to generate (default: 10)"
+        "-c", "--count", type=int, default=1000, help="Number of orders to generate (default: 1000)"
     )
     parser.add_argument(
         "-o",

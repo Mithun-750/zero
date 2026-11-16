@@ -6,10 +6,12 @@ This module generates mock e-commerce orders and loads them into PostgreSQL, dem
 
 ### 1. Generate Orders (`generate_orders.py`)
 
-Generates synthetic orders with realistic items, prices, and customer info using Faker.
+Generates synthetic orders with realistic items, prices, and customer info using Faker (default: 1000 orders).
 
 ```bash
-uv run generate-orders -c 25 -o data/orders.json
+uv run generate-orders
+# or specify custom count:
+uv run generate-orders -c 500 -o data/orders.json
 ```
 
 ### 2. Load Orders with Trigger-based Outbox Records (`load_orders.py`)
@@ -30,11 +32,11 @@ uv run load-orders -g 15
 Generates a test batch with configurable valid and corrupted records to test transaction rollbacks and verify that no orphan outbox records are created:
 
 ```bash
-# Default: 3 valid orders + 1 corrupted order
+# Default: 100 valid orders + 0 corrupted orders
 uv run test-load
 
-# Custom: 4 valid orders + 2 corrupted orders
-uv run test-load -c 4 -k 2
+# Custom: 100 valid orders + 5 corrupted orders
+uv run test-load -c 100 -k 5
 ```
 
 Injected corruption scenarios include:

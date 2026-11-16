@@ -177,8 +177,8 @@ def main() -> None:
     else:
         input_path = Path(args.input)
         if not input_path.exists():
-            print(f"Input file '{args.input}' not found. Generating 10 new orders first...")
-            orders = generate_orders(10)
+            print(f"Input file '{args.input}' not found. Generating 1000 new orders first...")
+            orders = generate_orders(1000)
             save_orders_to_file(orders, args.input)
         else:
             with input_path.open("r", encoding="utf-8") as f:

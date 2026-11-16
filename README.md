@@ -80,11 +80,11 @@ Generate mock orders and save them to `data-prep/data/orders.json`:
 
 ```bash
 cd data-prep
-uv run generate-orders -c 20
+uv run generate-orders
 ```
 
 Options:
-- `-c`, `--count`: Number of orders to generate (default: 10)
+- `-c`, `--count`: Number of orders to generate (default: 1000)
 - `-o`, `--output`: Output file path (default: `data/orders.json`)
 
 ### 3. Load Orders into PostgreSQL (with Outbox Events)
@@ -99,21 +99,21 @@ uv run load-orders
 Or generate and load directly on the fly:
 
 ```bash
-uv run load-orders -g 10
+uv run load-orders -g 1000
 ```
 
 ### 4. Quick Test Runner (Valid + Corrupted Records Verification)
 
-To test the database trigger and verify that failed/corrupted records roll back cleanly without generating orphan outbox records:
+To test the database trigger with a small test batch (default: 100 orders, 0 errors):
 
 ```bash
 cd data-prep
 
-# 3 valid orders + 1 corrupted order (default)
+# Default: 100 valid orders + 0 corrupted orders
 uv run test-load
 
-# Custom counts: e.g. 5 valid and 2 corrupted orders
-uv run test-load -c 5 -k 2
+# Custom counts: e.g. 100 valid and 3 corrupted orders
+uv run test-load -c 100 -k 3
 ```
 
 ### 5. Verify in PostgreSQL

@@ -20,6 +20,13 @@ from psycopg.rows import dict_row
 from data_prep.generate_orders import generate_orders, save_orders_to_file
 from data_prep.load_orders import get_db_connection, insert_order
 
+# =====================================================================
+# Configuration Defaults
+# =====================================================================
+DEFAULT_VALID_COUNT: int = 100       # Number of valid orders to generate
+DEFAULT_CORRUPTED_COUNT: int = 0     # Number of corrupted orders (default: 0 errors)
+# =====================================================================
+
 CORRUPTION_TYPES = [
     "negative_amount",
     "null_customer_id",
@@ -61,8 +68,8 @@ def create_corrupted_order(base_order: dict[str, Any], corruption_type: str | No
 
 
 def run_test_load(
-    valid_count: int = 3,
-    corrupted_count: int = 0,
+    valid_count: int = DEFAULT_VALID_COUNT,
+    corrupted_count: int = DEFAULT_CORRUPTED_COUNT,
     temp_file: str = "data/temp_test_orders.json",
 ) -> None:
     """Generate orders (valid + corrupted), load them, and verify outbox consistency."""
@@ -109,15 +116,19 @@ def run_test_load(
         successful_ids: list[str] = []
         failed_orders: list[tuple[str, str, str]] = []
 
-        for order in all_test_orders:
+        is_large_batch = len(all_test_orders) > 10
+
+        for idx, order in enumerate(all_test_orders, start=1):
             order_id = str(order.get("id"))
             order_num = order.get("order_number", "UNKNOWN")
-            is_corrupted = order_id in corruption_reasons
 
             try:
                 insert_order(conn, order)
                 successful_ids.append(order_id)
-                print(f"  [SUCCESS] Order {order_num} | Amount: ${order['total_amount']:.2f} -> Trigger wrote outbox")
+                if not is_large_batch:
+                    print(f"  [SUCCESS] Order {order_num} | Amount: ${order['total_amount']:.2f} -> Trigger wrote outbox")
+                elif idx % 20 == 0 or idx == len(all_test_orders):
+                    print(f"  Processed {idx}/{len(all_test_orders)} orders ({len(successful_ids)} valid, {len(failed_orders)} failed)...")
             except Exception as exc:
                 err_detail = str(exc).split("\n")[0]
                 reason = corruption_reasons.get(order_id, "Unexpected error")
@@ -126,9 +137,10 @@ def run_test_load(
                 print(f"    - Flaw injected : {reason}")
                 print(f"    - Database error: {err_detail}")
 
-        # 5. Query the newly created outbox records specifically
+        # 5. Query sample newly created outbox records specifically
         if successful_ids:
-            print("\nQuerying auto-generated Outbox records for successful orders:")
+            sample_ids = successful_ids[:3]
+            print(f"\nQuerying sample auto-generated Outbox records ({len(sample_ids)} of {len(successful_ids)}):")
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -137,7 +149,7 @@ def run_test_load(
                     WHERE aggregate_id = ANY(%s)
                     ORDER BY created_at ASC
                     """,
-                    (successful_ids,),
+                    (sample_ids,),
                 )
                 rows = cur.fetchall()
 
@@ -146,7 +158,7 @@ def run_test_load(
                 order_info = payload.get("order", {})
                 payment = order_info.get("payment_trigger", {})
 
-                print(f"\n--- [Outbox Event #{idx}] ---")
+                print(f"\n--- [Sample Outbox Event #{idx}] ---")
                 print(f"  Event ID       : {row['id']}")
                 print(f"  Aggregate ID   : {row['aggregate_id']}")
                 print(f"  Event Type     : {row['event_type']}")
@@ -154,6 +166,9 @@ def run_test_load(
                 print(f"  Customer       : {order_info.get('customer_name')} ({order_info.get('customer_id')})")
                 print(f"  Payment Action : {payment.get('action')}")
                 print(f"  Payment Amount : ${payment.get('amount')} {payment.get('currency')}")
+
+            if len(successful_ids) > len(sample_ids):
+                print(f"\n  ... and {len(successful_ids) - len(sample_ids)} more outbox events registered in database.")
 
         # 6. Final summary & ACID verification
         with conn.cursor() as cur:
@@ -191,8 +206,8 @@ def main() -> None:
         "-c",
         "--count",
         type=int,
-        default=3,
-        help="Number of valid test orders to generate (default: 3)",
+        default=DEFAULT_VALID_COUNT,
+        help=f"Number of valid test orders to generate (default: {DEFAULT_VALID_COUNT})",
     )
     parser.add_argument(
         "-k",
@@ -200,8 +215,8 @@ def main() -> None:
         "--corrupted-count",
         dest="corrupted",
         type=int,
-        default=1,
-        help="Number of corrupted test orders to generate (default: 1)",
+        default=DEFAULT_CORRUPTED_COUNT,
+        help=f"Number of corrupted test orders to generate (default: {DEFAULT_CORRUPTED_COUNT})",
     )
     parser.add_argument(
         "-t",
