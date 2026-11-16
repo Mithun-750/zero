@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import psycopg
 from psycopg.rows import dict_row
@@ -45,7 +45,7 @@ def mark_published(conn: psycopg.Connection[dict[str, Any]], event_id: Any) -> N
             """
             UPDATE outbox
             SET status = 'PUBLISHED',
-                processed_at = CURRENT_TIMESTAMP,
+                published_at = CURRENT_TIMESTAMP,
                 error_message = NULL
             WHERE id = %s AND status = 'PENDING'
             """,
@@ -73,3 +73,40 @@ def record_publish_failure(
         if row is None:
             raise RuntimeError(f"Could not record publish failure for outbox event {event_id}")
         return row["retry_count"]
+
+
+def process_event_idempotently(
+    conn: psycopg.Connection[dict[str, Any]],
+    event_id: Any,
+    consumer_name: str,
+    aggregate_id: Any,
+    business_action_fn: Callable[[psycopg.Cursor[dict[str, Any]], Any], None] | None = None,
+) -> tuple[bool, str]:
+    """Atomically record event processing and execute business logic within a single transaction.
+
+    Returns:
+        (True, "PROCESSED") if the event was processed for the first time.
+        (False, "DUPLICATE_SKIPPED") if the event was already registered in processed_events.
+    """
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO processed_events (
+                    event_id,
+                    consumer_name,
+                    aggregate_id
+                )
+                VALUES (%s, %s, %s)
+                ON CONFLICT (event_id) DO NOTHING
+                RETURNING event_id;
+                """,
+                (event_id, consumer_name, aggregate_id),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                if business_action_fn is not None:
+                    business_action_fn(cur, aggregate_id)
+                return True, "PROCESSED"
+            return False, "DUPLICATE_SKIPPED"
+

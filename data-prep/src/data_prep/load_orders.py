@@ -35,7 +35,7 @@ def get_db_connection() -> psycopg.Connection:
 
     conn_str = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
     try:
-        conn = psycopg.connect(conn_str, row_factory=dict_row)
+        conn = psycopg.connect(conn_str, row_factory=dict_row, autocommit=True)
         return conn
     except Exception as exc:
         print(f"[Error] Failed to connect to PostgreSQL at {host}:{port}/{dbname}: {exc}", file=sys.stderr)

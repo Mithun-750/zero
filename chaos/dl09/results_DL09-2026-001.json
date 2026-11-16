@@ -1,0 +1,30 @@
+{
+  "run_id": "DL09-2026-001",
+  "failed_broker": "kafka-1",
+  "affected_partition": 0,
+  "initial_leader": 1,
+  "new_leader": 2,
+  "new_leader_isr": [
+    2,
+    3
+  ],
+  "failure_timestamp": "2026-11-16T18:41:24.221738+00:00",
+  "election_latency_seconds": 6.108,
+  "producer_recovery_latency_seconds": 6.122,
+  "total_recovery_duration_seconds": 16.743,
+  "isr_recovered": true,
+  "reconciliation": {
+    "run_id": "DL09-2026-001",
+    "target_events": 1000,
+    "accepted_events": 1000,
+    "published_events": 1000,
+    "processed_events": 1000,
+    "pending_outbox_events": 0,
+    "missing_acknowledged_events": 0,
+    "unexplained_events": 0,
+    "duplicate_business_operations": 0,
+    "observed_rpo": 0,
+    "rpo_zero_satisfied": true
+  }
+}
+

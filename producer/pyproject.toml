@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Kafka relay for the PostgreSQL transactional outbox"
 requires-python = ">=3.15"
 dependencies = [
+    "faker>=40.54.0",
     "kafka-python>=2.2.15",
     "psycopg[binary]>=3.3.9",
     "python-dotenv>=1.2.4",
@@ -11,6 +12,7 @@ dependencies = [
 
 [project.scripts]
 outbox-relay = "producer.outbox_relay:main"
+order-consumer = "producer.consumer:main"
 
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14.0"]
