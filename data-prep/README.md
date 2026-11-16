@@ -27,21 +27,14 @@ uv run load-orders -i data/orders.json
 uv run load-orders -g 15
 ```
 
-### 3. Quick Test Load with Error Injection (`test_load.py`)
+### 3. Quick Test Load (`test_load.py`)
 
-Generates a test batch with configurable valid and corrupted records to test transaction rollbacks and verify that no orphan outbox records are created:
+Generates a small test batch (default: 100 orders), saves to a temporary test file, inserts them, and immediately queries & displays the newly auto-generated outbox events with their payment triggers:
 
 ```bash
-# Default: 100 valid orders + 0 corrupted orders
+# Default: 100 test orders
 uv run test-load
 
-# Custom: 100 valid orders + 5 corrupted orders
-uv run test-load -c 100 -k 5
+# Custom: e.g. 20 orders
+uv run test-load -c 20
 ```
-
-Injected corruption scenarios include:
-- Negative order `total_amount` (`CHECK total_amount >= 0`)
-- Missing / NULL `customer_id` (`NOT NULL` constraint)
-- Negative item `quantity` (`CHECK quantity > 0`)
-- Negative item `unit_price` (`CHECK unit_price >= 0`)
-- Invalid UUID formatting
