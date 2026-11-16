@@ -1,16 +1,16 @@
 # Transactional Outbox and Kafka - Learning Project
 
-This learning project demonstrates how an order service can persist an order and an outbox event in PostgreSQL, then relay the event to Kafka. It currently includes order data preparation and the producer relay. A payment consumer is not implemented yet.
+This learning project demonstrates the **Transactional Outbox Pattern** with PostgreSQL and Apache Kafka: an order service commits order data and outbox events in a single database transaction, and a dedicated producer relay transports those events to Kafka for downstream consumers (such as a payment service).
 
 ---
 
 ## Architecture Overview
 
-When an order is placed, instead of writing to the database and directly calling a message broker (which introduces distributed consistency / dual-write failure risks), the system writes:
+When an order is placed, instead of writing to the database and directly calling a message broker (which introduces distributed consistency and dual-write failure risks), the system writes:
 1. The **Order** & **Order Items**
 2. An **Outbox Event** (`OrderCreated` with payment trigger payload)
 
-...inside a **single ACID database transaction**.
+...inside a **single ACID database transaction** using a PostgreSQL trigger.
 
 ```
    +-------------------------------------------------------------+
@@ -18,7 +18,7 @@ When an order is placed, instead of writing to the database and directly calling
    |                                                             |
    |   1. INSERT INTO orders (order details, total_amount)       |
    |      +-- PostgreSQL Trigger (trg_order_created_outbox) --+  |
-   |          |-> Auto-inserts into outbox (payment_trigger) -+  |
+   |          |-> Auto-inserts into outbox (topic, payload) --+  |
    |   2. INSERT INTO order_items (item details, prices)         |
    +-------------------------------------------------------------+
                                   |
@@ -32,7 +32,7 @@ When an order is placed, instead of writing to the database and directly calling
                                   |
                                   v
                             [Kafka Topic]
-                        (orders.created)
+                          (orders.created)
                                   |
                                   v
                        [Future Payment Service]
@@ -40,13 +40,25 @@ When an order is placed, instead of writing to the database and directly calling
 
 ---
 
+## Database Schema Highlights
+
+The database schema (`schema.sql`) contains:
+- **`orders`**: Stores core order records with `total_amount`, currency (`INR`), and status (`CREATED`).
+- **`order_items`**: Line items linked to orders via foreign key.
+- **`outbox`**: Transactional outbox table storing event metadata (`aggregate_id` UUID, `event_type`, `topic = 'orders.created'`, JSONB `payload`, `status = 'PENDING'`, and worker lease locks).
+- **`payments`**: Records payment attempts (`INITIATED`, `PROCESSING`, `SUCCESS`, `FAILED`) with `idempotency_key` and gateway references.
+- **`processed_events`**: Consumer idempotency ledger to track processed event IDs and prevent duplicate processing.
+- **`aggregate_processing_state`**: State management table to pause/block aggregates upon permanent consumer failures / DLQ routing.
+
+---
+
 ## Repository Structure
 
 ```
 .
-├── docker-compose.yml              # PostgreSQL Docker Compose configuration
+├── docker-compose.yml              # PostgreSQL and Apache Kafka services
 ├── .env.example                    # Template environment variables
-├── .env                            # Optional local environment file (ignored by Git)
+├── .env                            # Local environment configuration
 ├── schema.sql                      # Single database schema source of truth (mounted in Docker)
 ├── producer/
 │   ├── README.md                   # Producer setup, event contract, and operations
@@ -61,7 +73,7 @@ When an order is placed, instead of writing to the database and directly calling
             ├── __init__.py
             ├── generate_orders.py  # Synthetic order generation script
             ├── load_orders.py      # Database loader with atomic Outbox persistence
-            └── test_load.py        # Test runner with error injection
+            └── test_load.py        # Test runner for quick outbox trigger verification
 ```
 
 ---
@@ -70,20 +82,20 @@ When an order is placed, instead of writing to the database and directly calling
 
 ### 1. Start PostgreSQL and Kafka
 
-```powershell
+```bash
 docker compose up -d
 ```
 
-The PostgreSQL container (`zero-outbox-postgres`) starts with a healthcheck and initializes the schema from `schema.sql` on first startup. Kafka runs locally as a single Apache Kafka 4.4.0 KRaft broker. The `kafka-init` service creates the `orders.created` and `payments.dlq` topics.
-
-> **Note:** By default, Postgres is mapped to host port `5433` (`${POSTGRES_PORT:-5433}`) to prevent collisions if port `5432` is occupied on your machine. You can configure this in `.env`.
+- **PostgreSQL (`zero-outbox-postgres`)**: Runs PostgreSQL 17 on port `5433` (`${POSTGRES_PORT:-5433}`) and automatically initializes `schema.sql`.
+- **Kafka (`zero-outbox-kafka`)**: Single-node Apache Kafka 4.4.0 in KRaft mode on port `9092`.
+- **`kafka-init`**: Automatically creates the `orders.created` and `payments.dlq` topics.
 
 ### 2. Generate Orders
 
 Generate mock orders and save them to `data-prep/data/orders.json`:
 
-```powershell
-Set-Location data-prep
+```bash
+cd data-prep
 uv sync
 uv run generate-orders
 ```
@@ -92,12 +104,12 @@ Options:
 - `-c`, `--count`: Number of orders to generate (default: 1000)
 - `-o`, `--output`: Output file path (default: `data/orders.json`)
 
-### 3. Load Orders into PostgreSQL (with Outbox Events)
+### 3. Load Orders into PostgreSQL
 
 Load generated orders into the database:
 
-```powershell
-Set-Location data-prep
+```bash
+cd data-prep
 uv sync
 uv run load-orders
 ```
@@ -112,8 +124,8 @@ uv run load-orders -g 1000
 
 To test the database trigger with a small test batch (default: 100 orders, 0 errors):
 
-```powershell
-Set-Location data-prep
+```bash
+cd data-prep
 uv sync
 
 # Default: 100 valid orders + 0 corrupted orders
@@ -127,51 +139,52 @@ uv run test-load -c 100 -k 3
 
 Connect to the database:
 
-```powershell
+```bash
 docker exec -it zero-outbox-postgres psql -U postgres -d order_db
 ```
 
 Check outbox events:
 
 ```sql
-SELECT id, aggregate_id, event_type, status, payload->'order'->'payment_trigger' AS payment_trigger 
+SELECT id, aggregate_id, event_type, topic, status, payload->'payment_trigger' AS payment_trigger 
 FROM outbox 
 LIMIT 5;
 ```
 
-### 6. Install and run the outbox relay
+### 6. Run the Outbox Relay (Producer)
 
 In another terminal:
 
-```powershell
+```bash
 cd producer
 uv sync
 uv run outbox-relay
 ```
 
-The relay polls pending outbox rows, sends them to `orders.created` with `aggregate_id` as the Kafka key, and marks them `PUBLISHED` only after Kafka acknowledges delivery. Use `uv run outbox-relay --once` to process one batch and exit. On a publish error, it records the error and retry count while leaving the row `PENDING`.
+- The relay polls pending outbox rows from PostgreSQL, publishes them to `orders.created` with `aggregate_id` as the Kafka key, and marks rows `PUBLISHED` only after Kafka acknowledges delivery.
+- Run `uv run outbox-relay --once` to process a single batch and exit.
+- On publish failure, the relay increments `retry_count`, logs the error message, and leaves the row `PENDING` for subsequent retry.
 
-The outgoing event uses the outbox row's `id` as its stable `event_id`, including when the trigger payload contains a different generated ID. The relay provides at-least-once publication; consumers must deduplicate by `event_id`.
+### 7. Inspect Kafka Messages
 
-To inspect topic records:
+To inspect messages published to the `orders.created` topic:
 
-```powershell
+```bash
 docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic orders.created --from-beginning
 ```
 
-To inspect topic status:
+To inspect topic partition and replica details:
 
-```powershell
+```bash
 docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic orders.created
 ```
 
-The payment consumer and DLQ publishing/retry behavior are not implemented in this phase. The Kafka console consumer is only a way to inspect messages; it does not process payments.
+---
 
-## Current scope and reliability notes
+## Current Scope and Reliability Notes
 
-- Implemented: PostgreSQL transactional outbox, local Kafka topics, and the outbox-to-Kafka producer relay.
-- Producer delivery is at least once. A crash after Kafka accepts an event but before PostgreSQL is updated can result in a duplicate; a future consumer should deduplicate using `event_id`.
-- The current Kafka event includes order-header and payment-trigger data, not individual order items. The producer payload must be extended before a consumer can validate purchased products against a catalog.
-- A single local Kafka broker cannot demonstrate broker high availability or establish an RPO 0 guarantee. Those targets require a replicated setup and recovery testing.
+- **Implemented**: PostgreSQL transactional outbox pattern via trigger, local Kafka topics (`orders.created`, `payments.dlq`), and the outbox-to-Kafka producer relay.
+- **At-Least-Once Delivery**: The relay provides at-least-once delivery. If a crash occurs after broker acknowledgment but before database status update, duplicates can occur. Downstream consumers should deduplicate using `event_id` and the `processed_events` table.
+- **Payment Consumer**: The consumer service and dead-letter queue (DLQ) processing represent future phases. The Kafka console consumer allows inspecting events in transit.
 
-For producer-specific setup, event format, and operations, see [`producer/README.md`](</D:/Projects/DTCC/RPO-RTO Project/producer/README.md>).
+For producer-specific configuration, event envelope schema, and operations, see [producer/README.md](producer/README.md).

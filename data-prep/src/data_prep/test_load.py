@@ -144,7 +144,7 @@ def run_test_load(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, aggregate_id, event_type, status, created_at, payload
+                    SELECT id, aggregate_id, event_type, topic, status, created_at, payload
                     FROM outbox
                     WHERE aggregate_id = ANY(%s)
                     ORDER BY created_at ASC
@@ -155,17 +155,17 @@ def run_test_load(
 
             for idx, row in enumerate(rows, start=1):
                 payload = row["payload"]
-                order_info = payload.get("order", {})
-                payment = order_info.get("payment_trigger", {})
+                payment = payload.get("payment_trigger", {})
 
                 print(f"\n--- [Sample Outbox Event #{idx}] ---")
                 print(f"  Event ID       : {row['id']}")
                 print(f"  Aggregate ID   : {row['aggregate_id']}")
                 print(f"  Event Type     : {row['event_type']}")
+                print(f"  Kafka Topic    : {row['topic']}")
                 print(f"  Status         : {row['status']}")
-                print(f"  Customer       : {order_info.get('customer_name')} ({order_info.get('customer_id')})")
+                print(f"  Customer       : {payload.get('customer_name')} ({payload.get('customer_id')})")
                 print(f"  Payment Action : {payment.get('action')}")
-                print(f"  Payment Amount : ${payment.get('amount')} {payment.get('currency')}")
+                print(f"  Payment Amount : {payment.get('amount')} {payment.get('currency')}")
 
             if len(successful_ids) > len(sample_ids):
                 print(f"\n  ... and {len(successful_ids) - len(sample_ids)} more outbox events registered in database.")
