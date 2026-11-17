@@ -1,0 +1,91 @@
+{
+  "experimentId": "KAFKA-CONTROLLER-FAILURE-2026-001",
+  "experimentType": "KRaft Controller Broker Failure and Recovery",
+  "failureTarget": "kafka-1",
+  "targetNodeId": 1,
+  "preFailureController": "kafka-1 (Node ID: 1, LeaderEpoch: 5)",
+  "postFailureController": "kafka-3 (Node ID: 3, LeaderEpoch: 6)",
+  "activeVotersDuringFailure": [2, 3],
+  "timeline": {
+    "healthyBaselineCapturedAt": "2026-11-17T09:30:46.576721900Z",
+    "controllerStopInitiatedAt": "2026-11-17T09:31:04.4372331Z",
+    "controllerStoppedAt": "2026-11-17T09:31:08.5015889Z",
+    "controllerElectionObservedAt": "2026-11-17T09:31:25.0000000Z",
+    "producerStartedAt": "2026-11-17T09:31:57.7995774Z",
+    "producerCompletedAt": "2026-11-17T09:32:25.9676874Z",
+    "consumerStartedAt": "2026-11-17T09:33:48.0000000Z",
+    "consumerCompletedAt": "2026-11-17T09:34:06.8700800Z",
+    "brokerRestartInitiatedAt": "2026-11-17T09:35:03.2725590Z",
+    "brokerRestartedAt": "2026-11-17T09:35:03.7318440Z",
+    "replicationRecoveredAt": "2026-11-17T09:35:19.8204924Z"
+  },
+  "controllerQuorumDynamics": {
+    "voterCount": 3,
+    "activeVotersDuringOutage": 2,
+    "majoritySatisfied": true,
+    "leaderEpochBefore": 5,
+    "leaderEpochAfter": 6,
+    "metadataHighWatermark": 15905
+  },
+  "partitionLeadership": {
+    "topic": "orders.created",
+    "preFailure": {
+      "partition0": { "leader": 1, "replicas": [1, 2, 3], "isr": [1, 2, 3] },
+      "partition1": { "leader": 2, "replicas": [2, 3, 1], "isr": [1, 2, 3] },
+      "partition2": { "leader": 3, "replicas": [3, 1, 2], "isr": [1, 2, 3] }
+    },
+    "duringControllerFailure": {
+      "partition0": { "leader": 2, "replicas": [1, 2, 3], "isr": [2, 3], "failover": "Broker 1 -> Broker 2" },
+      "partition1": { "leader": 2, "replicas": [2, 3, 1], "isr": [2, 3], "failover": "None" },
+      "partition2": { "leader": 3, "replicas": [3, 1, 2], "isr": [2, 3], "failover": "None" }
+    },
+    "postRecovery": {
+      "partition0": { "leader": 2, "replicas": [1, 2, 3], "isr": [1, 2, 3] },
+      "partition1": { "leader": 2, "replicas": [2, 3, 1], "isr": [1, 2, 3] },
+      "partition2": { "leader": 3, "replicas": [3, 1, 2], "isr": [1, 2, 3] }
+    }
+  },
+  "metrics": {
+    "recoveryTimeObjective": {
+      "controllerElectionTimeSeconds": 16.498,
+      "clusterFullReplicationRecoveryTimeSeconds": 16.548,
+      "serviceOutageSeconds": 0.0,
+      "description": "KRaft voters 2 and 3 successfully elected Broker 3 as controller within 16.5s. Full 3-broker ISR membership restored within 16.5s post restart."
+    },
+    "recoveryPointObjective": {
+      "eventsAcknowledged": 1000,
+      "eventsLost": 0,
+      "rpoSeconds": 0.0,
+      "description": "Zero message loss (RPO = 0). Exactly 1,000 orders generated, published with acks=all, consumed, and persisted."
+    },
+    "producerAvailability": {
+      "expectedEvents": 1000,
+      "publishedDuringFailure": 1000,
+      "failedAttempts": 0,
+      "durationSeconds": 28.168,
+      "throughputMsgsPerSec": 35.50,
+      "durabilityConfig": "acks=all, enable.idempotence=true, min.insync.replicas=2"
+    },
+    "consumerAvailability": {
+      "expectedEvents": 1000,
+      "processedDuringFailure": 1000,
+      "processedAfterRecovery": 0,
+      "duplicateOutcomes": 0,
+      "failedOrParkedOutcomes": 0,
+      "finalConsumerLag": 0,
+      "durationSeconds": 18.87,
+      "throughputMsgsPerSec": 53.00
+    },
+    "dataIntegrity": {
+      "missingOrders": 0,
+      "missingOutboxEvents": 0,
+      "missingProcessedEvents": 0,
+      "missingPayments": 0,
+      "duplicateProcessing": 0,
+      "dlqEvents": 0,
+      "parkedEvents": 0,
+      "reconciliationVerdict": "CLEAN"
+    }
+  }
+}
+

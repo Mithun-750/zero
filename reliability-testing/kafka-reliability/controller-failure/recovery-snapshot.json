@@ -1,0 +1,120 @@
+{
+  "experimentId" : "KAFKA-CONTROLLER-FAILURE-2026-001",
+  "timestamp" : "2026-11-17T09:35:27.313425Z",
+  "label" : "recovery",
+  "database" : {
+    "timestamp" : "2026-11-17T09:35:26.801019100Z",
+    "totalOrders" : 4004,
+    "outboxTotal" : 4004,
+    "outboxPending" : 0,
+    "outboxProcessing" : 0,
+    "outboxPublished" : 4004,
+    "outboxFailed" : 0,
+    "processedEventsTotal" : 4007,
+    "processedEventsByConsumer" : {
+      "payment-consumer" : 3000,
+      "order-processing-consumer" : 1007
+    },
+    "paymentsTotal" : 3000,
+    "paymentsByStatus" : {
+      "INITIATED" : 3000
+    },
+    "eventFailuresTotal" : 1,
+    "eventFailuresByStatus" : {
+      "OPEN" : 1
+    },
+    "parkedEventsTotal" : 0,
+    "parkedEventsByStatus" : { }
+  },
+  "kafka" : {
+    "timestamp" : "2026-11-17T09:35:27.308031200Z",
+    "clusterId" : "4L6g3nShT-eMCtK--X86sw",
+    "controllerId" : 3,
+    "brokers" : [ {
+      "id" : 1,
+      "host" : "localhost",
+      "port" : 9092,
+      "rack" : null
+    }, {
+      "id" : 2,
+      "host" : "localhost",
+      "port" : 9094,
+      "rack" : null
+    }, {
+      "id" : 3,
+      "host" : "localhost",
+      "port" : 9096,
+      "rack" : null
+    } ],
+    "topicPartitions" : {
+      "orders.created" : [ {
+        "partition" : 0,
+        "leader" : 2,
+        "replicas" : [ 1, 2, 3 ],
+        "isr" : [ 1, 2, 3 ],
+        "beginningOffset" : 0,
+        "endOffset" : 1289
+      }, {
+        "partition" : 1,
+        "leader" : 2,
+        "replicas" : [ 2, 3, 1 ],
+        "isr" : [ 1, 2, 3 ],
+        "beginningOffset" : 0,
+        "endOffset" : 1378
+      }, {
+        "partition" : 2,
+        "leader" : 3,
+        "replicas" : [ 3, 1, 2 ],
+        "isr" : [ 1, 2, 3 ],
+        "beginningOffset" : 0,
+        "endOffset" : 1341
+      } ],
+      "payments.dlq" : [ {
+        "partition" : 0,
+        "leader" : 3,
+        "replicas" : [ 3, 1, 2 ],
+        "isr" : [ 1, 2, 3 ],
+        "beginningOffset" : 0,
+        "endOffset" : 1
+      }, {
+        "partition" : 1,
+        "leader" : 2,
+        "replicas" : [ 1, 2, 3 ],
+        "isr" : [ 1, 2, 3 ],
+        "beginningOffset" : 0,
+        "endOffset" : 1
+      }, {
+        "partition" : 2,
+        "leader" : 2,
+        "replicas" : [ 2, 3, 1 ],
+        "isr" : [ 1, 2, 3 ],
+        "beginningOffset" : 0,
+        "endOffset" : 2
+      } ]
+    },
+    "consumerGroupOffsets" : {
+      "orders.created" : {
+        "0" : 1289,
+        "1" : 1378,
+        "2" : 1341
+      },
+      "payments.dlq" : {
+        "0" : -1,
+        "1" : -1,
+        "2" : -1
+      }
+    },
+    "consumerGroupLag" : {
+      "orders.created" : {
+        "0" : 0,
+        "1" : 0,
+        "2" : 0
+      },
+      "payments.dlq" : {
+        "0" : 1,
+        "1" : 1,
+        "2" : 2
+      }
+    }
+  }
+}

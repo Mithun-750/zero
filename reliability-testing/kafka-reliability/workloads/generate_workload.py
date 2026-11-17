@@ -13,9 +13,9 @@ sys.path.insert(0, os.path.abspath("data-prep/src"))
 from data_prep.load_orders import get_db_connection, insert_order
 from data_prep.generate_orders import generate_orders
 
-OUTPUT_DIR = Path("reliability-testing/kafka-broker-failure/phase-e")
+OUTPUT_DIR = Path(os.getenv("WORKLOAD_OUTPUT_DIR", "reliability-testing/kafka-reliability/workloads"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-ORDERS_FILE = OUTPUT_DIR / "orders-1000.json"
+ORDERS_FILE = Path(os.getenv("WORKLOAD_OUTPUT_FILE", OUTPUT_DIR / "generated-orders.json"))
 
 def main():
     conn = get_db_connection()
@@ -85,7 +85,7 @@ def main():
     if orders_in_db != 1000 or pending_outbox != 1000:
         print("[FAIL] Mismatch in generated orders or pending outbox records!", file=sys.stderr)
         sys.exit(1)
-    print("[SUCCESS] Phase E workload generated and verified.")
+    print("[SUCCESS] Workload generated and verified.")
 
 if __name__ == "__main__":
     main()
