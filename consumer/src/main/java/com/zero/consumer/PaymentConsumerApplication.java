@@ -91,35 +91,7 @@ public class PaymentConsumerApplication {
                     throw e;
                 }
 
-                for (ConsumerRecord<byte[], byte[]> record : records) {
-                    TopicPartition tp = new TopicPartition(record.topic(), record.partition());
-                    try {
-                        pipeline.processRecord(record);
-                    } catch (OffsetRejectException e) {
-                        // Outcome NOT durably persisted — do NOT commit.
-                        // Rewind to this record's offset and break so it will be redelivered.
-                        log.error("Offset NOT committed for partition={} offset={} — rewinding for redelivery: {}",
-                                record.partition(), record.offset(), e.getMessage());
-                        consumer.seek(tp, record.offset());
-                        break;
-                    } catch (Exception e) {
-                        // Unexpected failure — rewind and break to retry or fail deterministically.
-                        log.error("Unexpected error at partition={} offset={}; rewinding for redelivery: {}",
-                                record.partition(), record.offset(), e.getMessage(), e);
-                        consumer.seek(tp, record.offset());
-                        break;
-                    }
-
-                    // Commit explicitly ONLY up to this record's offset + 1
-                    try {
-                        consumer.commitSync(Collections.singletonMap(tp, new OffsetAndMetadata(record.offset() + 1)));
-                        processed++;
-                    } catch (CommitFailedException e) {
-                        log.warn("commitSync failed (rebalance or timeout) at partition={} offset={}: {}",
-                                record.partition(), record.offset(), e.getMessage());
-                        break;
-                    }
-                }
+                processed += processBatch(consumer, pipeline, records);
 
                 if (!records.isEmpty()) {
                     if (once) break;
@@ -156,7 +128,7 @@ public class PaymentConsumerApplication {
      */
     public static int processBatch(
             Consumer<byte[], byte[]> consumer,
-            Pipeline pipeline,
+            RecordProcessor pipeline,
             ConsumerRecords<byte[], byte[]> records) {
 
         int processedInBatch = 0;
@@ -169,8 +141,14 @@ public class PaymentConsumerApplication {
                     // Durable outcome reached (applied, duplicate, parked, or DLQ'd).
                     // Commit explicit next offset for this partition:
                     long nextOffset = record.offset() + 1;
-                    consumer.commitSync(Collections.singletonMap(tp, new OffsetAndMetadata(nextOffset)));
-                    processedInBatch++;
+                    try {
+                        consumer.commitSync(Collections.singletonMap(tp, new OffsetAndMetadata(nextOffset)));
+                        processedInBatch++;
+                    } catch (CommitFailedException e) {
+                        log.warn("commitSync failed (rebalance or timeout) at topic={} partition={} offset={}: {}",
+                                record.topic(), record.partition(), record.offset(), e.getMessage());
+                        break;
+                    }
                 } catch (OffsetRejectException e) {
                     // Outcome NOT durably persisted (e.g. DB or DLQ write failed).
                     // Rewind consumer position for this partition so this record and

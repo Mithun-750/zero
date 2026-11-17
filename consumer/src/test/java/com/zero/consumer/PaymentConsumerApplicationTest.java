@@ -25,14 +25,14 @@ class PaymentConsumerApplicationTest {
     private static final TopicPartition P1 = new TopicPartition(TOPIC, 1);
 
     private MockConsumer<byte[], byte[]> mockConsumer;
-    private Pipeline mockPipeline;
+    private RecordProcessor mockPipeline;
 
     @BeforeEach
     void setUp() {
         mockConsumer = new MockConsumer<>(OffsetResetStrategy.EARLIEST);
         mockConsumer.assign(List.of(P0, P1));
         mockConsumer.updateBeginningOffsets(Map.of(P0, 0L, P1, 0L));
-        mockPipeline = mock(Pipeline.class);
+        mockPipeline = mock(RecordProcessor.class);
     }
 
     private ConsumerRecord<byte[], byte[]> createRecord(TopicPartition tp, long offset, String key, String jsonPayload) {
