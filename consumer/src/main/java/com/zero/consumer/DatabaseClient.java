@@ -22,7 +22,8 @@ public class DatabaseClient implements AutoCloseable {
     public static final String CONSUMER_NAME = "payment-consumer";
 
     private final Connection conn;
-    private final ObjectMapper mapper = new ObjectMapper();
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private final ObjectMapper mapper = MAPPER;
 
     public DatabaseClient(Settings settings) throws SQLException {
         String url = String.format("jdbc:postgresql://%s:%d/%s",
@@ -544,6 +545,16 @@ public class DatabaseClient implements AutoCloseable {
                 row.put(meta.getColumnName(i), ts.toInstant().toString());
             } else if (val instanceof java.sql.Date d) {
                 row.put(meta.getColumnName(i), d.toString());
+            } else if (val instanceof org.postgresql.util.PGobject pgo) {
+                if ("json".equalsIgnoreCase(pgo.getType()) || "jsonb".equalsIgnoreCase(pgo.getType())) {
+                    try {
+                        row.put(meta.getColumnName(i), MAPPER.readValue(pgo.getValue(), Object.class));
+                    } catch (Exception e) {
+                        row.put(meta.getColumnName(i), pgo.getValue());
+                    }
+                } else {
+                    row.put(meta.getColumnName(i), pgo.getValue());
+                }
             } else {
                 row.put(meta.getColumnName(i), val);
             }

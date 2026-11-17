@@ -117,6 +117,7 @@ public class PaymentConsumerApplication {
             }
         } finally {
             consumer.close();
+            dlq.close();
             db.close();
             dashboard.stop();
         }
