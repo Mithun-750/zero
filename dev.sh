@@ -15,11 +15,11 @@ for i in $(seq 1 60); do
 done
 
 echo "▸ starting outbox relay (producer)…"
-(cd producer && uv run outbox-relay) &
+mvn -pl producer exec:java -q &
 RELAY_PID=$!
 
 echo "▸ starting payment consumer (dashboard on http://127.0.0.1:8090)…"
-(cd consumer && uv run --active payment-consumer) &
+mvn -pl consumer exec:java -q &
 CONSUMER_PID=$!
 
 cleanup() {

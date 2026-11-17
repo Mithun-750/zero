@@ -64,3 +64,15 @@ postgres_data/
 # Operating System files
 .DS_Store
 Thumbs.db
+
+# Java & Maven Build Artifacts
+target/
+**/target/
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+.mvn/
+*.log
+
