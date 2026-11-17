@@ -21,7 +21,7 @@ import java.util.Map;
  *
  * Mirrors Python consumer/pipeline.py process_record().
  */
-public class Pipeline {
+public class Pipeline implements RecordProcessor {
 
     private static final Logger log = LoggerFactory.getLogger(Pipeline.class);
     private static final String DEFAULT_AGGREGATE_TYPE = "ORDER";

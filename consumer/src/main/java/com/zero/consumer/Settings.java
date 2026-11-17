@@ -29,12 +29,12 @@ public final class Settings {
 
     private Settings(Dotenv env) {
         this.postgresHost = get(env, "POSTGRES_HOST", "localhost");
-        this.postgresPort = positiveInt(env, "POSTGRES_PORT", "5433");
+        this.postgresPort = positiveInt(env, "POSTGRES_PORT", "5434");
         this.postgresDb = get(env, "POSTGRES_DB", "order_db");
         this.postgresUser = get(env, "POSTGRES_USER", "postgres");
         this.postgresPassword = get(env, "POSTGRES_PASSWORD", "postgres");
 
-        this.kafkaBootstrapServers = get(env, "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092");
+        this.kafkaBootstrapServers = get(env, "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092,localhost:9094,localhost:9096");
         this.kafkaOrdersTopic = get(env, "KAFKA_ORDERS_TOPIC", "orders.created");
         this.kafkaDlqTopic = get(env, "KAFKA_DLQ_TOPIC", "payments.dlq");
         this.kafkaConsumerGroup = get(env, "KAFKA_CONSUMER_GROUP", "payment-consumer");
@@ -48,13 +48,12 @@ public final class Settings {
     }
 
     public static Settings load() {
-        // Load .env from parent directory (../), same as Python find_dotenv(usecwd=True)
         Dotenv env;
         try {
-            env = Dotenv.configure()
-                    .directory("../")
-                    .ignoreIfMissing()
-                    .load();
+            env = Dotenv.configure().ignoreIfMissing().load();
+            if (env.get("POSTGRES_DB") == null) {
+                env = Dotenv.configure().directory("../").ignoreIfMissing().load();
+            }
         } catch (Exception e) {
             env = Dotenv.configure().ignoreIfMissing().load();
         }

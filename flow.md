@@ -72,25 +72,29 @@ sequenceDiagram
 
 ## 2. Infrastructure Initialization
 
-The infrastructure runs locally via Docker Compose defined in [docker-compose.yml](docker-compose.yml#L1-L67).
+The infrastructure runs locally via Docker Compose defined in [docker-compose.yml](docker-compose.yml#L1-L143).
 
 ### 2.1 PostgreSQL 17
 * **Container**: `zero-outbox-postgres`
-* **Port**: `5433` mapped to internal `5432` ([docker-compose.yml](docker-compose.yml#L10-L11))
+* **Port**: `5434` mapped to internal `5432` (`${POSTGRES_PORT:-5434}:5432`) ([docker-compose.yml](docker-compose.yml#L10-L11))
 * **Schema Mount**: Mounts [schema.sql](schema.sql#L1-L222) to `/docker-entrypoint-initdb.d/01_schema.sql` on startup.
 * **Healthcheck**: Uses `pg_isready -U postgres -d order_db` ([docker-compose.yml](docker-compose.yml#L15-L19)).
 
-### 2.2 Apache Kafka 4.4.0 (KRaft Mode)
-* **Container**: `zero-outbox-kafka`
-* **Port**: `9092` (host listener), `19092` (internal Docker listener), `29093` (KRaft controller) ([docker-compose.yml](docker-compose.yml#L29-L35)).
-* **Mode**: KRaft without Zookeeper (`KAFKA_PROCESS_ROLES: "broker,controller"`).
-* **Partitions**: Default `3` partitions per topic to support concurrent consumer partitioning.
+### 2.2 Apache Kafka 4.4.0 (3-Broker KRaft Cluster)
+* **Brokers**:
+  * `zero-outbox-kafka-1` (Node ID: 1, Host Port: `9092`, Controller: `29093`) ([docker-compose.yml](docker-compose.yml#L21-L53))
+  * `zero-outbox-kafka-2` (Node ID: 2, Host Port: `9094`, Controller: `29093`) ([docker-compose.yml](docker-compose.yml#L54-L86))
+  * `zero-outbox-kafka-3` (Node ID: 3, Host Port: `9096`, Controller: `29093`) ([docker-compose.yml](docker-compose.yml#L87-L119))
+* **Mode**: KRaft without Zookeeper (`KAFKA_PROCESS_ROLES: "broker,controller"`), controller quorum voters across all 3 nodes.
+* **Replication & Fault Tolerance**:
+  * `default.replication.factor: 3`, `min.insync.replicas: 2`, `offsets.topic.replication.factor: 3`.
+  * Guarantees high availability: survives loss of any single broker without downtime or data loss.
 
 ### 2.3 Automated Topic Initialization
-The `kafka-init` service waits for the broker to become healthy, then creates the topics with 3 partitions and replication factor 1 ([docker-compose.yml](docker-compose.yml#L52-L63)):
+The `kafka-init` service depends on `kafka-1`, `kafka-2`, and `kafka-3` being healthy, then creates topics with 3 partitions, replication factor 3, and `min.insync.replicas=2` ([docker-compose.yml](docker-compose.yml#L120-L138)):
 ```bash
-/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic orders.created --partitions 3 --replication-factor 1
-/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:19092 --create --if-not-exists --topic payments.dlq --partitions 3 --replication-factor 1
+/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:19092 --create --if-not-exists --topic orders.created --partitions 3 --replication-factor 3 --config min.insync.replicas=2
+/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:19092 --create --if-not-exists --topic payments.dlq --partitions 3 --replication-factor 3 --config min.insync.replicas=2
 ```
 
 ---
@@ -237,11 +241,28 @@ In [producer/src/main/java/com/zero/producer/KafkaPublisher.java](producer/src/m
 
 The Java consumer ([consumer/](consumer)) processes records with manual offset commits to guarantee at-least-once processing.
 
-### 5.1 Consumption Loop
-[consumer/src/main/java/com/zero/consumer/PaymentConsumerApplication.java](consumer/src/main/java/com/zero/consumer/PaymentConsumerApplication.java#L79-L109) polls the `orders.created` topic with `enable.auto.commit = false`.
-* Each record passes through `pipeline.processRecord(record)`.
-* Only after a **durable outcome** is achieved (applied, duplicate, parked, or DLQ'd) does the consumer invoke `consumer.commitSync()`.
-* If [consumer/src/main/java/com/zero/consumer/OffsetRejectException.java](consumer/src/main/java/com/zero/consumer/OffsetRejectException.java#L1-L10) is caught (e.g. DLQ broker write failed or DB write failed), the offset is **NOT** committed, guaranteeing redelivery.
+### 5.1 Consumption Loop & Per-Partition Offset Management
+[consumer/src/main/java/com/zero/consumer/PaymentConsumerApplication.java](consumer/src/main/java/com/zero/consumer/PaymentConsumerApplication.java#L80-L165) polls the `orders.created` topic with `enable.auto.commit = false`.
+* **Per-Partition Batch Processing (`processBatch`)**:
+  Instead of a flat loop that commits arbitrary offsets, `processBatch` groups records by `TopicPartition`:
+  ```java
+  for (TopicPartition tp : records.partitions()) {
+      for (ConsumerRecord<byte[], byte[]> record : records.records(tp)) {
+          ...
+      }
+  }
+  ```
+* **Contiguous Per-Record Offset Commits**:
+  Only after a durable outcome is achieved (applied, duplicate, parked, or DLQ'd) does the consumer commit the exact next offset for that partition:
+  ```java
+  consumer.commitSync(Collections.singletonMap(tp, new OffsetAndMetadata(record.offset() + 1)));
+  ```
+* **Partition Rewind (`seek`) on Failure**:
+  If [consumer/src/main/java/com/zero/consumer/OffsetRejectException.java](consumer/src/main/java/com/zero/consumer/OffsetRejectException.java#L1-L10) is caught (e.g., DB failure or DLQ write failure):
+  1. The consumer executes `consumer.seek(tp, record.offset())` to rewind Kafka's pointer back to the failed record.
+  2. Stops processing further records on that specific partition for this batch (`break`).
+  3. **Fault Isolation**: Other independent partitions in the same batch continue processing without interruption.
+  4. Guarantees strict at-least-once delivery with zero skipped messages.
 
 ### 5.2 Three-Stage Processing Pipeline ([consumer/src/main/java/com/zero/consumer/Pipeline.java](consumer/src/main/java/com/zero/consumer/Pipeline.java#L43-L147))
 
@@ -358,16 +379,45 @@ In [consumer/src/main/java/com/zero/consumer/Dashboard.java](consumer/src/main/j
 
 ---
 
-## 8. Summary Table of Microservice Commands
+## 8. Reliability Testing & Cluster Reconciliation (`reliability`)
+
+The `reliability` module provides an automated verification and audit suite ([reliability/](reliability)) to test cluster partition tolerance, broker failovers, and reconcile end-to-end ledger consistency.
+
+### 8.1 Key Reliability Operations ([ExperimentCLI.java](reliability/src/main/java/com/zero/reliability/ExperimentCLI.java))
+* **Database Snapshot (`snapshot-db`)**:
+  Captures a complete point-in-time snapshot of the database state including orders, pending outbox, published outbox, payments, and parked events ([DatabaseSnapshotClient.java](reliability/src/main/java/com/zero/reliability/db/DatabaseSnapshotClient.java)).
+* **Kafka Cluster Inspection (`inspect-kafka`)**:
+  Connects to all 3 brokers, inspecting partition leader distribution, In-Sync Replicas (ISR), log end offsets, and consumer group commit lag across `orders.created` and `payments.dlq` ([KafkaClusterInspector.java](reliability/src/main/java/com/zero/reliability/kafka/KafkaClusterInspector.java)).
+* **Reconciliation Engine (`reconcile`)**:
+  Cross-checks database orders and outbox rows against Kafka partition log offsets and payment records. Verifies:
+  1. **Zero Message Loss**: Every `PUBLISHED` outbox record exists in Kafka and is represented in `payments` or `event_failures`.
+  2. **Deduplication Correctness**: No duplicate payments created despite network retries.
+  3. **Strict Partition Ordering**: Outbox events per aggregate follow monotonic sequence.
+  Generates a detailed structured audit report ([ReconciliationEngine.java](reliability/src/main/java/com/zero/reliability/reconciliation/ReconciliationEngine.java)).
+
+```bash
+# Capture full cluster & DB snapshot before/after experiment
+mvn -pl reliability exec:java -Dexec.args="capture-state target/experiment-pre"
+
+# Run ledger reconciliation
+mvn -pl reliability exec:java -Dexec.args="reconcile"
+```
+
+---
+
+## 9. Summary Table of Microservice Commands
 
 | Task | Command |
 |---|---|
 | **Build all Java modules** | `mvn clean package -DskipTests` |
+| **Run all unit & partition tests** | `mvn test` |
+| **Start full stack (infra + services)** | `./dev.sh` |
 | **Generate & load orders (Python)** | `cd data-prep && uv run test-load -c 20` |
 | **Run Producer Relay (Continuous)** | `mvn -pl producer exec:java` |
 | **Run Producer Relay (Single batch)** | `mvn -pl producer exec:java -Dexec.args="--once"` |
 | **Run Consumer + Dashboard (Continuous)** | `mvn -pl consumer exec:java` |
 | **Run Consumer (Poll once & exit)** | `mvn -pl consumer exec:java -Dexec.args="--once"` |
 | **Simulate Poison Event (Fault Injector)**| `mvn -pl consumer exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"` |
+| **Run Reliability Cluster Reconciliation**| `mvn -pl reliability exec:java -Dexec.args="reconcile"` |
 | **Open Web Dashboard** | `http://localhost:8090` |
 

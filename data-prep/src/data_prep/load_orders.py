@@ -28,14 +28,14 @@ load_dotenv(find_dotenv(usecwd=True))
 def get_db_connection() -> psycopg.Connection:
     """Establish and return a connection to the PostgreSQL database."""
     host = os.getenv("POSTGRES_HOST", "localhost")
-    port = int(os.getenv("POSTGRES_PORT", "5433"))
+    port = int(os.getenv("POSTGRES_PORT", "5434"))
     dbname = os.getenv("POSTGRES_DB", "order_db")
     user = os.getenv("POSTGRES_USER", "postgres")
     password = os.getenv("POSTGRES_PASSWORD", "postgres")
 
     conn_str = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
     try:
-        conn = psycopg.connect(conn_str, row_factory=dict_row)
+        conn = psycopg.connect(conn_str, row_factory=dict_row, autocommit=True)
         return conn
     except Exception as exc:
         print(f"[Error] Failed to connect to PostgreSQL at {host}:{port}/{dbname}: {exc}", file=sys.stderr)

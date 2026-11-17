@@ -26,12 +26,12 @@ public final class Settings {
 
     private Settings(Dotenv dotenv) {
         this.postgresHost     = get(dotenv, "POSTGRES_HOST",              "localhost");
-        this.postgresPort     = Integer.parseInt(get(dotenv, "POSTGRES_PORT", "5433"));
+        this.postgresPort     = Integer.parseInt(get(dotenv, "POSTGRES_PORT", "5434"));
         this.postgresDb       = get(dotenv, "POSTGRES_DB",               "order_db");
         this.postgresUser     = get(dotenv, "POSTGRES_USER",             "postgres");
         this.postgresPassword = get(dotenv, "POSTGRES_PASSWORD",         "postgres");
 
-        this.kafkaBootstrapServers = get(dotenv, "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092");
+        this.kafkaBootstrapServers = get(dotenv, "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092,localhost:9094,localhost:9096");
         this.kafkaOrdersTopic      = get(dotenv, "KAFKA_ORDERS_TOPIC",      "orders.created");
         this.kafkaClientId         = get(dotenv, "KAFKA_CLIENT_ID",         "order-outbox-relay");
 
@@ -43,12 +43,11 @@ public final class Settings {
     public static Settings load() {
         Dotenv dotenv;
         try {
-            dotenv = Dotenv.configure()
-                           .directory("../")
-                           .ignoreIfMissing()
-                           .load();
+            dotenv = Dotenv.configure().ignoreIfMissing().load();
+            if (dotenv.get("POSTGRES_DB") == null) {
+                dotenv = Dotenv.configure().directory("../").ignoreIfMissing().load();
+            }
         } catch (Exception e) {
-            // If dotenv fails for any reason, work with system env only
             dotenv = Dotenv.configure().ignoreIfMissing().load();
         }
         return new Settings(dotenv);
