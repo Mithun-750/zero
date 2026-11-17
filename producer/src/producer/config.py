@@ -34,13 +34,16 @@ class Settings:
     kafka_client_id: str
     outbox_batch_size: int
     outbox_poll_interval_seconds: float
+    kafka_consumer_group: str
+    kafka_consumer_name: str
+    kafka_consumer_auto_offset_reset: str
 
 
 def load_settings() -> Settings:
     load_dotenv(find_dotenv(usecwd=True))
     return Settings(
         postgres_host=os.getenv("POSTGRES_HOST", "localhost"),
-        postgres_port=_positive_int("POSTGRES_PORT", "5433"),
+        postgres_port=_positive_int("POSTGRES_PORT", "5434"),
         postgres_db=os.getenv("POSTGRES_DB", "order_db"),
         postgres_user=os.getenv("POSTGRES_USER", "postgres"),
         postgres_password=os.getenv("POSTGRES_PASSWORD", "postgres"),
@@ -49,4 +52,7 @@ def load_settings() -> Settings:
         kafka_client_id=os.getenv("KAFKA_CLIENT_ID", "order-outbox-relay"),
         outbox_batch_size=_positive_int("OUTBOX_BATCH_SIZE", "100"),
         outbox_poll_interval_seconds=_positive_float("OUTBOX_POLL_INTERVAL_SECONDS", "2"),
+        kafka_consumer_group=os.getenv("KAFKA_CONSUMER_GROUP", "order-processing-test-group"),
+        kafka_consumer_name=os.getenv("KAFKA_CONSUMER_NAME", "order-processing-consumer"),
+        kafka_consumer_auto_offset_reset=os.getenv("KAFKA_CONSUMER_AUTO_OFFSET_RESET", "earliest"),
     )

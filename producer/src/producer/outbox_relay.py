@@ -18,17 +18,23 @@ logger = logging.getLogger("producer.outbox_relay")
 
 def build_event(row: dict[str, Any]) -> dict[str, Any]:
     payload = row["payload"]
-    if not isinstance(payload, dict) or not isinstance(payload.get("order"), dict):
+    if not isinstance(payload, dict):
         raise ValueError(f"Outbox event {row['id']} has no valid order payload")
 
-    order = payload["order"]
+    if isinstance(payload.get("order"), dict):
+        order = payload["order"]
+    elif "order_id" in payload or "order_number" in payload:
+        order = payload
+    else:
+        raise ValueError(f"Outbox event {row['id']} has no valid order payload")
+
     payment_trigger = order.get("payment_trigger")
     order_data = {key: value for key, value in order.items() if key != "payment_trigger"}
     data: dict[str, Any] = {"order": order_data}
     if payment_trigger is not None:
         data["payment_trigger"] = payment_trigger
 
-    occurred_at = payload.get("timestamp", row["created_at"])
+    occurred_at = payload.get("timestamp", row.get("created_at"))
     if isinstance(occurred_at, datetime):
         occurred_at = occurred_at.isoformat()
 
