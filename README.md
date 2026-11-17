@@ -56,25 +56,54 @@ The database schema (`schema.sql`) contains:
 
 ```
 .
-├── docker-compose.yml              # PostgreSQL and Apache Kafka services
+├── pom.xml                         # Root Maven Parent POM (builds producer-java & consumer-java)
+├── docker-compose.yml              # PostgreSQL 17 and Apache Kafka 4.4.0 (KRaft)
 ├── .env.example                    # Template environment variables
 ├── .env                            # Local environment configuration
 ├── schema.sql                      # Single database schema source of truth (mounted in Docker)
-├── producer/
-│   ├── README.md                   # Producer setup, event contract, and operations
-│   ├── pyproject.toml              # Producer dependencies and CLI entry point
-│   ├── uv.lock                     # Locked producer dependencies
-│   └── src/producer/               # Outbox polling and Kafka publishing
-└── data-prep/
+├── producer-java/                  # [MIGRATED TO JAVA] Outbox relay producer
+│   ├── pom.xml                     # Maven build with shade fat jar
+│   ├── README.md                   # Producer documentation & CLI usage
+│   └── src/main/java/com/zero/producer/
+│       ├── OutboxRelayApplication.java # Entry point, CLI args (--once), poll loop
+│       ├── Settings.java           # Dotenv & env var configuration
+│       ├── DatabaseClient.java     # JDBC outbox polling and status updates
+│       ├── KafkaPublisher.java     # KafkaProducer (acks=all, idempotent)
+│       └── EventBuilder.java       # Envelope construction & payload normalization
+├── consumer-java/                  # [MIGRATED TO JAVA] Payment consumer & dashboard
+│   ├── pom.xml                     # Maven build with shade fat jar
+│   ├── README.md                   # Consumer documentation & dashboard usage
+│   └── src/main/java/com/zero/consumer/
+│       ├── PaymentConsumerApplication.java # Entry point & manual offset commit loop
+│       ├── Pipeline.java           # 3-stage pipeline (Parse -> Block Check -> Apply/Retry)
+│       ├── EventValidator.java     # Envelope validation and business rules
+│       ├── DatabaseClient.java     # JDBC atomic payment application and state tracking
+│       ├── DlqPublisher.java       # Dead-letter queue (DLQ) publisher with metadata headers
+│       ├── Dashboard.java          # Embedded Javalin REST & live HTML monitoring UI
+│       ├── FaultInjector.java      # Fault injector CLI for poison event simulation
+│       └── Metrics.java            # Process metrics & failure classification counters
+└── data-prep/                      # [PYTHON] Data preparation and synthetic order generation
     ├── pyproject.toml              # Python project with uv dependencies and CLI scripts
     ├── uv.lock                     # Locked data preparation dependencies
-    └── src/
-        └── data_prep/
-            ├── __init__.py
-            ├── generate_orders.py  # Synthetic order generation script
-            ├── load_orders.py      # Database loader with atomic Outbox persistence
-            └── test_load.py        # Test runner for quick outbox trigger verification
+    └── src/data_prep/
+        ├── generate_orders.py      # Synthetic order generation script
+        ├── load_orders.py          # Database loader with atomic Outbox persistence
+        └── test_load.py            # Test runner for quick outbox trigger verification
 ```
+
+---
+
+## Build Java Services
+
+Build both the Java Producer and Consumer using Maven (Java 27 / Maven 3.10+):
+
+```bash
+mvn clean package -DskipTests
+```
+
+This compiles both modules and builds executable fat jars:
+- `producer-java/target/producer-java-1.0.0.jar`
+- `consumer-java/target/consumer-java-1.0.0.jar`
 
 ---
 
@@ -90,80 +119,74 @@ docker compose up -d
 - **Kafka (`zero-outbox-kafka`)**: Single-node Apache Kafka 4.4.0 in KRaft mode on port `9092`.
 - **`kafka-init`**: Automatically creates the `orders.created` and `payments.dlq` topics.
 
-### 2. Generate Orders
+### 2. Generate and Load Orders (Python `data-prep`)
 
-Generate mock orders and save them to `data-prep/data/orders.json`:
-
-```bash
-cd data-prep
-uv sync
-uv run generate-orders
-```
-
-Options:
-- `-c`, `--count`: Number of orders to generate (default: 1000)
-- `-o`, `--output`: Output file path (default: `data/orders.json`)
-
-### 3. Load Orders into PostgreSQL
-
-Load generated orders into the database:
+Generate mock orders and load them into the database using `data-prep`:
 
 ```bash
 cd data-prep
 uv sync
-uv run load-orders
-```
-
-Or generate and load directly on the fly:
-
-```bash
-uv run load-orders -g 1000
-```
-
-### 4. Quick Test Runner
-
-To test the database trigger with a test batch (default: 100 orders):
-
-```bash
-cd data-prep
-uv sync
-
-# Default: 100 test orders
-uv run test-load
-
-# Custom count: e.g. 20 orders
 uv run test-load -c 20
 ```
 
-### 5. Verify in PostgreSQL
+This inserts 20 orders, triggering the PostgreSQL `trg_order_created_outbox` trigger to auto-populate the `outbox` table with `status = 'PENDING'`.
 
-Connect to the database:
+### 3. Run the Java Outbox Relay (Producer)
 
-```bash
-docker exec -it zero-outbox-postgres psql -U postgres -d order_db
-```
-
-Check outbox events:
-
-```sql
-SELECT id, aggregate_id, event_type, topic, status, payload->'payment_trigger' AS payment_trigger 
-FROM outbox 
-LIMIT 5;
-```
-
-### 6. Run the Outbox Relay (Producer)
-
-In another terminal:
+In a terminal, you can run directly with Maven:
 
 ```bash
-cd producer
-uv sync
-uv run outbox-relay
+# Run continuous polling with Maven (default every 2 seconds)
+mvn -pl producer-java exec:java
+
+# Or run a single batch and exit
+mvn -pl producer-java exec:java -Dexec.args="--once"
 ```
 
-- The relay polls pending outbox rows from PostgreSQL, publishes them to `orders.created` with `aggregate_id` as the Kafka key, and marks rows `PUBLISHED` only after Kafka acknowledges delivery.
-- Run `uv run outbox-relay --once` to process a single batch and exit.
-- On publish failure, the relay increments `retry_count`, logs the error message, and leaves the row `PENDING` for subsequent retry.
+Or using the built fat jar:
+```bash
+java -jar producer-java/target/producer-java-1.0.0.jar [--once]
+```
+
+- The relay polls `PENDING` outbox rows from PostgreSQL, publishes them to `orders.created` with `aggregate_id` as the Kafka key, and marks rows `PUBLISHED` only after Kafka acknowledges delivery (`acks=all`).
+- On publish failure, the relay increments `retry_count`, logs the error, and leaves the row `PENDING` for retry.
+
+### 4. Run the Java Payment Consumer
+
+In another terminal, you can run directly with Maven:
+
+```bash
+# Run continuous consumer + embedded dashboard with Maven
+mvn -pl consumer-java exec:java
+
+# Or process available messages and exit
+mvn -pl consumer-java exec:java -Dexec.args="--once"
+```
+
+Or using the built fat jar:
+```bash
+java -jar consumer-java/target/consumer-java-1.0.0.jar [--once]
+```
+
+- Subscribes to `orders.created` with manual offset commits (at-least-once).
+- Checks whether the aggregate is blocked before processing. If blocked, followers are safely parked in `parked_events`.
+- Validates the event envelope and domain rules, and records applied payments in `payments` and `processed_events` idempotently.
+- On permanent failure, routes the poison event to `payments.dlq`, records the failure in `event_failures`, and pauses the aggregate in `aggregate_processing_state`.
+- Launches the live web monitoring dashboard at **http://127.0.0.1:8090**.
+
+### 5. Simulate Faults & DLQ Flow
+
+Inject a poison event (e.g. negative amount) followed by valid follower events to test DLQ routing and aggregate blocking:
+
+```bash
+# Via Maven:
+mvn -pl consumer-java exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"
+
+# Or via JAR:
+java -cp consumer-java/target/consumer-java-1.0.0.jar com.zero.consumer.FaultInjector
+```
+
+Then visit the dashboard at **http://127.0.0.1:8090** to view open failures, inspect parked events, and resolve/discard failures with one click.
 
 ### 7. Inspect Kafka Messages
 
