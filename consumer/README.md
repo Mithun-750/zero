@@ -1,124 +1,137 @@
-# Payment Consumer
+# consumer-java
 
-Consumes `orders.created` (produced by the outbox relay), applies payments,
-and keeps the stream safe from poison events. It is the third piece of the
-learning stack: `data-prep` (load orders) → `producer` (outbox relay → Kafka)
-→ **`consumer` (Kafka → payments, plus the failure dashboard)**.
+Java Maven port of the Python payment consumer. Subscribes to Kafka `orders.created`,
+processes events through a validation + apply pipeline, and writes results to PostgreSQL.
 
-Delivery semantics: **at-least-once**. The consumer dedupes durably through
-`processed_events` (one row per applied `event_id`) and
-`payments.idempotency_key = event_id`, so re-delivered events are no-ops —
-you will see `duplicate` counters, never double payments.
+## Prerequisites
 
-## What it does per record
+- Java 27+
+- Maven 3.10+
+- Running PostgreSQL (see root `docker-compose.yml`)
+- Running Kafka
 
-```
-raw bytes
-   │
-   ├─ JSON parse ──✗──► payments.dlq  + event_failures(OPEN) + block aggregate
-   │                     (no aggregate identifiable → block skipped)
-   ▼
-block check: is aggregate blocked? ──yes──► parked_events (replay later), offset committed
-   │ no
-   ▼
-validate (envelope + business rules)
-   ├─ permanent ✗──► payments.dlq  + event_failures(OPEN) + block aggregate
-   ▼
-apply: insert payments (INITIATED) + processed_events  ── 1 transaction
-   ├─ transient ✗──► retry ≤3 (backoff+jitter) ──exhausted──► TRANSIENT_EXHAUSTED → DLQ + block
-   ▼
-commit offset
-```
-
-Poison events **never retry forever** and never wedge the partition: other
-aggregates on the same partition keep flowing, because blocking is per
-`aggregate_id`, not per partition.
-
-## Requirements
-
-- Docker Compose services up (`postgres` + `kafka` on ports 5433/9092)
-- `uv`, `python>=3.12` (runs in the repo-root shared `.venv`)
-- Orders loaded (`data-prep`) and the relay running (`producer`) or the consumer idles
-
-## Quickstart
+## Build
 
 ```bash
-docker compose up -d                     # postgres + kafka
-cd data-prep && uv run load-orders -g 10  # create orders → outbox PENDING
-cd ../producer && uv run outbox-relay     # outbox → orders.created
-cd ../consumer && uv run --active payment-consumer   # consume + serve dashboard
+cd consumer-java
+mvn package -q
+# produces: target/consumer-java-1.0.0.jar
 ```
 
-Open **http://127.0.0.1:8090**
+## Run
 
-> `--active` matters: the root `.venv` is the shared environment; a bare
-> `uv sync`/`uv run` would create `consumer/.venv` (this was deliberately
-> avoided). Alternatively `export UV_PROJECT_ENVIRONMENT=/path/to/zero/.venv`.
+### Using Maven (Recommended)
 
-## Dashboard (port 8090)
+From the project root:
+```bash
+# Continuous consumer + dashboard
+mvn -pl consumer-java exec:java
 
-- **Overview cards** — consumed/applied/duplicate/parked/failed, success rate,
-  blocked-aggregate count (red banner), open-failure count, per-partition lag,
-  outbox backlog.
-- **DLQ table** — every poison event with class/reason/offset and a status
-  filter (OPEN / RESOLVED / DISCARDED / all). For OPEN rows:
-  - **resolve…** — edit the event JSON (fix the bad field), **apply & unblock**;
-  - **discard** — skip the event, optionally discard parked followers too.
-- **Blocked aggregates** — parked followers per aggregate.
-- **Applied payments / Event ledger** — what the consumer actually did.
-- **APIs** — `/api/metrics`, `/api/failures`, `/api/blocked`, `/api/parked`,
-  `/api/payments`, `/api/ledger`, `/healthz`, `/readyz`.
+# Poll once and exit
+mvn -pl consumer-java exec:java -Dexec.args="--once"
 
-## DLQ + aggregate-block drill
+# Run fault injector CLI
+mvn -pl consumer-java exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"
+```
+
+Or from within `consumer-java/`:
+```bash
+cd consumer-java
+mvn exec:java
+mvn exec:java -Dexec.args="--once"
+mvn exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"
+```
+
+### Using Executable JAR
 
 ```bash
-uv run --active inject-fault              # corrupt event (amount=-50) + 2 valid followers
+# Continuous mode (default)
+java -jar target/consumer-java-1.0.0.jar
+
+# Poll once and exit (dev/verification)
+java -jar target/consumer-java-1.0.0.jar --once
 ```
-
-Watch: corrupt event → DLQ + `BUSINESS_RULE` failure row, aggregate blocked
-(red banner), 2 followers parked, `payments` unchanged for the order. Then:
-
-- **Resolve** — edit `payment_trigger.amount` to `50`, apply & unblock.
-  The fixed event applies, followers replay in `kafka_offset` order, the
-  aggregate unblocks. Failure row → RESOLVED.
-- **Discard** — the bad event is skipped; with "also discard parked
-  followers" the followers are dropped too; without it, followers replay.
-
-Resolutions run in ONE transaction — a failure anywhere aborts everything
-(nothing is applied or unblocked, failure stays OPEN).
 
 ## Configuration
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `KAFKA_CONSUMER_GROUP` | `payment-consumer` | Consumer group id |
-| `KAFKA_CONSUMER_CLIENT_ID` | `payment-consumer` | Client id (distinct from the relay's `KAFKA_CLIENT_ID`) |
-| `KAFKA_ORDERS_TOPIC` / `KAFKA_DLQ_TOPIC` | `orders.created` / `payments.dlq` | Topics |
-| `CONSUMER_MAX_RETRIES` | `3` | Transient retry budget per record |
-| `CONSUMER_RETRY_BACKOFF_SECONDS` | `0.5` | Backoff base (attempts grow 1×/2×/4× + jitter) |
-| `DASHBOARD_PORT` / `DASHBOARD_HOST` | `8090` / `127.0.0.1` | Dashboard bind |
+Environment variables (with defaults). Copy `../.env` to override:
 
-## Limitations (by design)
+| Variable | Default |
+|---|---|
+| `POSTGRES_HOST` | `localhost` |
+| `POSTGRES_PORT` | `5433` |
+| `POSTGRES_DB` | `order_db` |
+| `POSTGRES_USER` | `postgres` |
+| `POSTGRES_PASSWORD` | `postgres` |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
+| `KAFKA_ORDERS_TOPIC` | `orders.created` |
+| `KAFKA_DLQ_TOPIC` | `payments.dlq` |
+| `KAFKA_CONSUMER_GROUP` | `payment-consumer` |
+| `KAFKA_CONSUMER_CLIENT_ID` | `payment-consumer` |
+| `CONSUMER_MAX_RETRIES` | `3` |
+| `CONSUMER_RETRY_BACKOFF_SECONDS` | `0.5` |
+| `DASHBOARD_PORT` | `8090` |
+| `DASHBOARD_HOST` | `127.0.0.1` |
 
-- **Single consumer instance** — same limitation as the relay; partition
-  ownership is not coordinated beyond consumer-group assignment.
-- **In-memory counters reset on restart** — durable truth is PostgreSQL
-  (`payments`, `processed_events`, `event_failures`, `parked_events`,
-  `aggregate_processing_state`); only the rate cards reset.
-- **Raw event payload is not persisted** — the payments row + ledger are the
-  durable record. The original bytes survive in `event_failures.raw_payload`
-  only for failures.
-- **Parked followers replay inside the resolve request** — a poison
-  *follower* aborts the whole resolution with a 500; fix or discard both.
+## Dashboard
 
-## Tests
+REST dashboard runs at `http://127.0.0.1:8090` by default.
+
+| Route | Description |
+|---|---|
+| `GET /` | Embedded HTML UI |
+| `GET /api/metrics` | In-memory counters + DB gauges |
+| `GET /api/failures` | DLQ event failures |
+| `GET /api/blocked` | Blocked aggregates |
+| `GET /api/parked` | Parked follower events |
+| `GET /api/payments` | Recent applied payments |
+| `GET /api/ledger` | Recent processed events |
+| `POST /api/failures/{id}/resolve` | Resolve a DLQ failure (apply fixed event) |
+| `POST /api/failures/{id}/discard` | Discard a DLQ failure |
+| `GET /healthz` | Health check |
+| `GET /readyz` | Readiness check (pings PostgreSQL) |
+
+## Fault Injector
+
+Inject a corrupt event + valid followers to test the DLQ/block/park/resolve flow:
 
 ```bash
-uv run --active python -m unittest discover -s tests -v
+java -cp target/consumer-java-1.0.0.jar com.zero.consumer.FaultInjector \
+  [--order-id UUID] [--followers 2] [--corrupt-amount -50.0] [--amount 99.0]
 ```
 
-29 unit tests, no broker/database required (module seams are mocked):
-`test_classify.py` (validator), `test_dlq.py` (envelope),
-`test_pipeline.py` (every decision path incl. DLQ-failure no-commit),
-`test_resolve.py` (fix/drain/unblock ordering, discard semantics,
-abort-on-invalid).
+## Processing Pipeline
+
+1. **Parse** raw bytes as JSON → if unparseable → DLQ (VALIDATION failure)
+2. **Block check** → if aggregate is blocked → park event in `parked_events` → commit offset
+3. **Apply** → validate event + business rules → INSERT into `payments` + `processed_events` atomically
+   - On permanent error (ValidationException/BusinessRuleException) → DLQ + block aggregate
+   - On transient error → retry with exponential backoff; on exhaustion → DLQ
+4. **Commit offset** only after a durable outcome (applied, duplicate, parked, or DLQ'd)
+
+## Project Structure
+
+```
+consumer-java/
+├── pom.xml
+├── README.md
+└── src/main/
+    ├── java/com/zero/consumer/
+    │   ├── PaymentConsumerApplication.java   # main, CLI args, Kafka poll loop, signal handling
+    │   ├── Settings.java                     # immutable config from env
+    │   ├── DatabaseClient.java               # all JDBC ops
+    │   ├── DlqPublisher.java                 # one-off KafkaProducer per DLQ write
+    │   ├── Pipeline.java                     # process_record logic
+    │   ├── EventValidator.java               # validation + business rules
+    │   ├── ConsumerException.java            # base exception
+    │   ├── ValidationException.java
+    │   ├── BusinessRuleException.java
+    │   ├── TransientException.java
+    │   ├── DlqPublishException.java
+    │   ├── OffsetRejectException.java
+    │   ├── Metrics.java                      # in-memory counters
+    │   ├── Dashboard.java                    # Javalin REST server
+    │   └── FaultInjector.java                # inject-fault CLI
+    └── resources/
+        └── logback.xml
+```
