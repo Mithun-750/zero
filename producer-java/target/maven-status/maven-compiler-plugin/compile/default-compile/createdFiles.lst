@@ -1,6 +1,0 @@
-com/zero/producer/DatabaseClient.class
-com/zero/producer/EventBuilder.class
-com/zero/producer/Settings.class
-com/zero/producer/KafkaPublisher.class
-com/zero/producer/DatabaseClient$1.class
-com/zero/producer/OutboxRelayApplication.class
