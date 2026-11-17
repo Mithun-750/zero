@@ -1,6 +1,6 @@
 package com.zero.consumer;
 
-import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.CommitFailedException;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -90,8 +90,35 @@ public class PaymentConsumerApplication {
                     throw e;
                 }
 
-                int batchProcessed = processBatch(consumer, pipeline, records);
-                processed += batchProcessed;
+                for (ConsumerRecord<byte[], byte[]> record : records) {
+                    TopicPartition tp = new TopicPartition(record.topic(), record.partition());
+                    try {
+                        pipeline.processRecord(record);
+                    } catch (OffsetRejectException e) {
+                        // Outcome NOT durably persisted — do NOT commit.
+                        // Rewind to this record's offset and break so it will be redelivered.
+                        log.error("Offset NOT committed for partition={} offset={} — rewinding for redelivery: {}",
+                                record.partition(), record.offset(), e.getMessage());
+                        consumer.seek(tp, record.offset());
+                        break;
+                    } catch (Exception e) {
+                        // Unexpected failure — rewind and break to retry or fail deterministically.
+                        log.error("Unexpected error at partition={} offset={}; rewinding for redelivery: {}",
+                                record.partition(), record.offset(), e.getMessage(), e);
+                        consumer.seek(tp, record.offset());
+                        break;
+                    }
+
+                    // Commit explicitly ONLY up to this record's offset + 1
+                    try {
+                        consumer.commitSync(Collections.singletonMap(tp, new OffsetAndMetadata(record.offset() + 1)));
+                        processed++;
+                    } catch (CommitFailedException e) {
+                        log.warn("commitSync failed (rebalance or timeout) at partition={} offset={}: {}",
+                                record.partition(), record.offset(), e.getMessage());
+                        break;
+                    }
+                }
 
                 if (!records.isEmpty()) {
                     if (once) break;
@@ -104,6 +131,7 @@ public class PaymentConsumerApplication {
             }
         } finally {
             consumer.close();
+            dlq.close();
             db.close();
             dashboard.stop();
         }

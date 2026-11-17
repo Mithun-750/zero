@@ -11,16 +11,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 /**
  * Publishes poison events to the dead-letter topic (payments.dlq).
- * Creates a one-off KafkaProducer per DLQ write (acks=all, idempotence=true).
+ * Manages an idempotent KafkaProducer (acks=all, idempotence=true).
  * Mirrors Python consumer/dlq.py.
  */
-public class DlqPublisher {
+public class DlqPublisher implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(DlqPublisher.class);
     private static final int RAW_PAYLOAD_MAX = 10_000;
@@ -28,9 +29,18 @@ public class DlqPublisher {
 
     private final Settings settings;
     private final ObjectMapper mapper = new ObjectMapper();
+    private final KafkaProducer<byte[], byte[]> producer;
 
     public DlqPublisher(Settings settings) {
         this.settings = settings;
+        Properties props = new Properties();
+        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, settings.kafkaBootstrapServers);
+        props.put(ProducerConfig.CLIENT_ID_CONFIG, settings.kafkaClientId + "-dlq");
+        props.put(ProducerConfig.ACKS_CONFIG, "all");
+        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
+        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
+        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
+        this.producer = new KafkaProducer<>(props);
     }
 
     /**
@@ -54,7 +64,7 @@ public class DlqPublisher {
             Long sourceTimestamp
     ) {
         Map<String, Object> ev = (event != null) ? event : new LinkedHashMap<>();
-        String rawText = new String(rawPayload, StandardCharsets.UTF_8);
+        String rawText = rawPayload != null ? new String(rawPayload, StandardCharsets.UTF_8) : "";
         if (rawText.length() > RAW_PAYLOAD_MAX) rawText = rawText.substring(0, RAW_PAYLOAD_MAX);
 
         Map<String, Object> source = new LinkedHashMap<>();
@@ -70,7 +80,7 @@ public class DlqPublisher {
         envelope.put("aggregate_id", ev.get("aggregate_id"));
         envelope.put("occurred_at", ev.get("occurred_at"));
         envelope.put("source", source);
-        envelope.put("failure_class", failureClass);
+        envelope.put("failure_class", failureClass != null ? failureClass : "UNKNOWN");
         envelope.put("failure_reason", truncate(failureReason, REASON_MAX));
         envelope.put("attempt_count", attemptCount);
         envelope.put("raw_payload", rawText);
@@ -105,26 +115,17 @@ public class DlqPublisher {
 
         // Build Kafka headers
         List<org.apache.kafka.common.header.Header> headers = new ArrayList<>();
-        headers.add(new RecordHeader("failure_class", failureClass.getBytes(StandardCharsets.UTF_8)));
+        String fClass = failureClass != null ? failureClass : "UNKNOWN";
+        headers.add(new RecordHeader("failure_class", fClass.getBytes(StandardCharsets.UTF_8)));
         headers.add(new RecordHeader("consumer_name", DatabaseClient.CONSUMER_NAME.getBytes(StandardCharsets.UTF_8)));
         Object eidObj = envelope.get("event_id");
-        if (eidObj != null) {
+        if (eidObj != null && !eidObj.toString().isBlank()) {
             headers.add(new RecordHeader("event_id", eidObj.toString().getBytes(StandardCharsets.UTF_8)));
         }
-        if (aggregateIdObj != null) {
+        if (aggregateIdObj != null && !aggregateIdObj.toString().isBlank()) {
             headers.add(new RecordHeader("aggregate_id", aggregateIdObj.toString().getBytes(StandardCharsets.UTF_8)));
         }
 
-        // Create a one-off producer per DLQ write
-        Properties props = new Properties();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, settings.kafkaBootstrapServers);
-        props.put(ProducerConfig.CLIENT_ID_CONFIG, settings.kafkaClientId + "-dlq");
-        props.put(ProducerConfig.ACKS_CONFIG, "all");
-        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
-        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
-        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
-
-        KafkaProducer<byte[], byte[]> producer = new KafkaProducer<>(props);
         try {
             byte[] value = mapper.writeValueAsBytes(envelope);
             ProducerRecord<byte[], byte[]> record = new ProducerRecord<>(
@@ -141,13 +142,16 @@ public class DlqPublisher {
         } catch (Exception e) {
             throw new DlqPublishException(
                     "could not publish to DLQ " + settings.kafkaDlqTopic + ": " + e.getMessage(), e);
-        } finally {
-            try {
-                producer.flush();
-                producer.close();
-            } catch (Exception e) {
-                log.warn("DLQ producer close failed", e);
-            }
+        }
+    }
+
+    @Override
+    public void close() {
+        try {
+            producer.flush();
+            producer.close(Duration.ofSeconds(5));
+        } catch (Exception e) {
+            log.warn("DLQ producer close failed: {}", e.getMessage());
         }
     }
 

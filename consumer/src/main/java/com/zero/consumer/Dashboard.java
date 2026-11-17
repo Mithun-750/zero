@@ -265,19 +265,27 @@ public class Dashboard {
                             db.markParked(parked.get("id"), "DISCARDED");
                             discarded++;
                         } else {
-                            // parked.event is JSONB — it comes back as a Map
+                            // parked.event is JSONB — it comes back as a Map or PGobject
                             Object eventObj = parked.get("event");
                             Map<String, Object> parkedEvent;
                             if (eventObj instanceof Map) {
                                 parkedEvent = (Map<String, Object>) eventObj;
                             } else if (eventObj instanceof String s) {
                                 parkedEvent = mapper.readValue(s, Map.class);
+                            } else if (eventObj instanceof org.postgresql.util.PGobject pgo) {
+                                parkedEvent = mapper.readValue(pgo.getValue(), Map.class);
                             } else {
                                 throw new RuntimeException("Cannot deserialize parked event: " + eventObj);
                             }
-                            db.applyEvent(parkedEvent);
-                            db.markParked(parked.get("id"), "REPLAYED");
-                            replayed++;
+                            try {
+                                db.applyEvent(parkedEvent);
+                                db.markParked(parked.get("id"), "REPLAYED");
+                                replayed++;
+                            } catch (ValidationException | BusinessRuleException ex) {
+                                throw new ResolutionException("Follower event " + parked.get("event_id")
+                                        + " failed replay: " + ex.getMessage()
+                                        + ". Discard with followers or address corrupt follower first.");
+                            }
                         }
                     }
                     result.put("parked_replayed", replayed);
