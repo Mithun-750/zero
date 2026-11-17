@@ -1,9 +1,12 @@
 package com.zero.consumer;
 
+import org.apache.kafka.clients.consumer.CommitFailedException;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,23 +90,33 @@ public class PaymentConsumerApplication {
                 }
 
                 for (ConsumerRecord<byte[], byte[]> record : records) {
+                    TopicPartition tp = new TopicPartition(record.topic(), record.partition());
                     try {
                         pipeline.processRecord(record);
                     } catch (OffsetRejectException e) {
                         // Outcome NOT durably persisted — do NOT commit.
-                        // The record will be redelivered (at-least-once).
-                        log.error("Offset NOT committed for partition={} offset={} — will be redelivered",
-                                record.partition(), record.offset());
-                        continue;
+                        // Rewind to this record's offset and break so it will be redelivered.
+                        log.error("Offset NOT committed for partition={} offset={} — rewinding for redelivery: {}",
+                                record.partition(), record.offset(), e.getMessage());
+                        consumer.seek(tp, record.offset());
+                        break;
                     } catch (Exception e) {
-                        // Unexpected failure — deterministic for poison records on redelivery.
-                        log.error("Unexpected error at partition={} offset={}; not committing",
-                                record.partition(), record.offset(), e);
-                        continue;
+                        // Unexpected failure — rewind and break to retry or fail deterministically.
+                        log.error("Unexpected error at partition={} offset={}; rewinding for redelivery: {}",
+                                record.partition(), record.offset(), e.getMessage(), e);
+                        consumer.seek(tp, record.offset());
+                        break;
                     }
-                    // Commit only after a durable outcome
-                    consumer.commitSync();
-                    processed++;
+
+                    // Commit explicitly ONLY up to this record's offset + 1
+                    try {
+                        consumer.commitSync(Collections.singletonMap(tp, new OffsetAndMetadata(record.offset() + 1)));
+                        processed++;
+                    } catch (CommitFailedException e) {
+                        log.warn("commitSync failed (rebalance or timeout) at partition={} offset={}: {}",
+                                record.partition(), record.offset(), e.getMessage());
+                        break;
+                    }
                 }
 
                 if (!records.isEmpty()) {
