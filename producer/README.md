@@ -121,7 +121,7 @@ For each outbox row, the relay:
 1. Reads a limited batch of `PENDING` rows.
 2. Builds the event envelope and publishes to `orders.created` using `acks=all` and producer idempotence.
 3. Waits for the Kafka send result.
-4. On acknowledgement, updates the row to `PUBLISHED` and sets `processed_at`.
+4. On acknowledgement, updates the row to `PUBLISHED` and sets `published_at`.
 5. On publish failure, leaves the row `PENDING`, increments `retry_count`, and records the error.
 
 PostgreSQL and Kafka do not share one transaction. If Kafka accepts a message and the relay exits before updating PostgreSQL, the event can be published again after restart. Delivery is therefore **at least once**, not exactly once end-to-end.
@@ -251,7 +251,7 @@ PENDING ── Kafka acknowledgement received ──► PUBLISHED
    └── publish error ──► remain PENDING, increment retry_count, save error_message
 ```
 
-`processed_at` records when the relay marked an event `PUBLISHED`; it does not mean payment processing completed. The producer does not currently move events to `FAILED` or apply a retry limit. A malformed event or repeated broker failure remains pending and is retried on later polls.
+`published_at` records when the relay marked an event `PUBLISHED`; it does not mean payment processing completed. The producer does not currently move events to `FAILED` or apply a retry limit. A malformed event or repeated broker failure remains pending and is retried on later polls.
 
 View counts by status:
 
@@ -262,7 +262,7 @@ docker compose exec -T postgres psql -U postgres -d order_db -c "SELECT status, 
 Inspect recent rows and any recorded errors:
 
 ```powershell
-docker compose exec -T postgres psql -U postgres -d order_db -c "SELECT id, aggregate_id, status, retry_count, processed_at, error_message FROM outbox ORDER BY created_at DESC LIMIT 10;"
+docker compose exec -T postgres psql -U postgres -d order_db -c "SELECT id, aggregate_id, status, retry_count, published_at, error_message FROM outbox ORDER BY created_at DESC LIMIT 10;"
 ```
 
 Describe the topic:

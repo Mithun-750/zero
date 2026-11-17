@@ -32,6 +32,33 @@ class BuildEventTests(unittest.TestCase):
         self.assertEqual(event["data"]["payment_trigger"]["action"], "INITIATE_PAYMENT")
         self.assertNotIn("payment_trigger", event["data"]["order"])
 
+
+    def test_accepts_flat_trigger_payload(self) -> None:
+        row = {
+            "id": "outbox-event-id",
+            "aggregate_type": "ORDER",
+            "aggregate_id": "order-id",
+            "event_type": "OrderCreated",
+            "created_at": datetime(2026, 11, 16, tzinfo=timezone.utc),
+            "payload": {
+                "order_id": "order-id",
+                "total_amount": 12.5,
+                "status": "CREATED",
+                "payment_trigger": {
+                    "action": "INITIATE_PAYMENT",
+                    "amount": 12.5,
+                    "currency": "INR",
+                },
+            },
+        }
+
+        event = build_event(row)
+
+        self.assertEqual(event["data"]["order"]["order_id"], "order-id")
+        self.assertEqual(event["data"]["payment_trigger"]["action"], "INITIATE_PAYMENT")
+        self.assertNotIn("payment_trigger", event["data"]["order"])
+
+
     def test_rejects_payload_without_order(self) -> None:
         row = {
             "id": "outbox-event-id",

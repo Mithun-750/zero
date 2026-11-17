@@ -18,10 +18,21 @@ logger = logging.getLogger("producer.outbox_relay")
 
 def build_event(row: dict[str, Any]) -> dict[str, Any]:
     payload = row["payload"]
-    if not isinstance(payload, dict) or not isinstance(payload.get("order"), dict):
+    if not isinstance(payload, dict):
         raise ValueError(f"Outbox event {row['id']} has no valid order payload")
 
-    order = payload["order"]
+    # Two accepted shapes:
+    #   nested: {"order": {...}}                        — the documented producer envelope
+    #   flat:   {"order_id": ..., "payment_trigger": ...} — what the DB trigger writes
+    # The trigger is the single source of truth for outbox payloads, so flat is
+    # the real contract; nested is kept for compatibility/tests.
+    nested = payload.get("order")
+    order = nested if isinstance(nested, dict) else payload
+    if not isinstance(order.get("order_id"), str) or not order["order_id"]:
+        raise ValueError(f"Outbox event {row['id']} has no valid order payload")
+        raise ValueError(f"Outbox event {row['id']} has no valid order payload")
+
+
     payment_trigger = order.get("payment_trigger")
     order_data = {key: value for key, value in order.items() if key != "payment_trigger"}
     data: dict[str, Any] = {"order": order_data}

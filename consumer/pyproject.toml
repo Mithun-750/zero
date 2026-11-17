@@ -1,0 +1,23 @@
+[project]
+name = "payment-consumer"
+version = "0.1.0"
+description = "Kafka OrderCreated consumer: applies payments, tracks failures"
+requires-python = ">=3.12"
+dependencies = [
+    "kafka-python>=2.2.15",
+    "psycopg[binary]>=3.3.9",
+    "python-dotenv>=1.2.4",
+    "fastapi>=0.124.0",
+    "uvicorn>=0.38.0",
+]
+
+[project.scripts]
+payment-consumer = "consumer.main:main"
+inject-fault = "consumer.inject:main"
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "consumer"

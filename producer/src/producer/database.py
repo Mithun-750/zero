@@ -45,7 +45,7 @@ def mark_published(conn: psycopg.Connection[dict[str, Any]], event_id: Any) -> N
             """
             UPDATE outbox
             SET status = 'PUBLISHED',
-                processed_at = CURRENT_TIMESTAMP,
+                published_at = CURRENT_TIMESTAMP,
                 error_message = NULL
             WHERE id = %s AND status = 'PENDING'
             """,
