@@ -56,13 +56,15 @@ The database schema (`schema.sql`) contains:
 
 ```
 .
-├── pom.xml                         # Root Maven Parent POM (builds producer-java & consumer-java)
+├── pom.xml                         # Root Maven Parent POM (builds producer & consumer)
 ├── docker-compose.yml              # PostgreSQL 17 and Apache Kafka 4.4.0 (KRaft)
 ├── .env.example                    # Template environment variables
 ├── .env                            # Local environment configuration
+├── dev.sh                          # One-command startup script
+├── flow.md                         # Detailed end-to-end architecture & order flow
 ├── schema.sql                      # Single database schema source of truth (mounted in Docker)
-├── producer-java/                  # [MIGRATED TO JAVA] Outbox relay producer
-│   ├── pom.xml                     # Maven build with shade fat jar
+├── producer/                       # [JAVA] Outbox relay producer
+│   ├── pom.xml                     # Maven build with shade fat jar & exec plugin
 │   ├── README.md                   # Producer documentation & CLI usage
 │   └── src/main/java/com/zero/producer/
 │       ├── OutboxRelayApplication.java # Entry point, CLI args (--once), poll loop
@@ -70,8 +72,8 @@ The database schema (`schema.sql`) contains:
 │       ├── DatabaseClient.java     # JDBC outbox polling and status updates
 │       ├── KafkaPublisher.java     # KafkaProducer (acks=all, idempotent)
 │       └── EventBuilder.java       # Envelope construction & payload normalization
-├── consumer-java/                  # [MIGRATED TO JAVA] Payment consumer & dashboard
-│   ├── pom.xml                     # Maven build with shade fat jar
+├── consumer/                       # [JAVA] Payment consumer & dashboard
+│   ├── pom.xml                     # Maven build with shade fat jar & exec plugin
 │   ├── README.md                   # Consumer documentation & dashboard usage
 │   └── src/main/java/com/zero/consumer/
 │       ├── PaymentConsumerApplication.java # Entry point & manual offset commit loop
@@ -102,8 +104,8 @@ mvn clean package -DskipTests
 ```
 
 This compiles both modules and builds executable fat jars:
-- `producer-java/target/producer-java-1.0.0.jar`
-- `consumer-java/target/consumer-java-1.0.0.jar`
+- `producer/target/producer-1.0.0.jar`
+- `consumer/target/consumer-1.0.0.jar`
 
 ---
 
@@ -137,15 +139,15 @@ In a terminal, you can run directly with Maven:
 
 ```bash
 # Run continuous polling with Maven (default every 2 seconds)
-mvn -pl producer-java exec:java
+mvn -pl producer exec:java
 
 # Or run a single batch and exit
-mvn -pl producer-java exec:java -Dexec.args="--once"
+mvn -pl producer exec:java -Dexec.args="--once"
 ```
 
 Or using the built fat jar:
 ```bash
-java -jar producer-java/target/producer-java-1.0.0.jar [--once]
+java -jar producer/target/producer-1.0.0.jar [--once]
 ```
 
 - The relay polls `PENDING` outbox rows from PostgreSQL, publishes them to `orders.created` with `aggregate_id` as the Kafka key, and marks rows `PUBLISHED` only after Kafka acknowledges delivery (`acks=all`).
@@ -157,15 +159,15 @@ In another terminal, you can run directly with Maven:
 
 ```bash
 # Run continuous consumer + embedded dashboard with Maven
-mvn -pl consumer-java exec:java
+mvn -pl consumer exec:java
 
 # Or process available messages and exit
-mvn -pl consumer-java exec:java -Dexec.args="--once"
+mvn -pl consumer exec:java -Dexec.args="--once"
 ```
 
 Or using the built fat jar:
 ```bash
-java -jar consumer-java/target/consumer-java-1.0.0.jar [--once]
+java -jar consumer/target/consumer-1.0.0.jar [--once]
 ```
 
 - Subscribes to `orders.created` with manual offset commits (at-least-once).
@@ -180,10 +182,10 @@ Inject a poison event (e.g. negative amount) followed by valid follower events t
 
 ```bash
 # Via Maven:
-mvn -pl consumer-java exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"
+mvn -pl consumer exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"
 
 # Or via JAR:
-java -cp consumer-java/target/consumer-java-1.0.0.jar com.zero.consumer.FaultInjector
+java -cp consumer/target/consumer-1.0.0.jar com.zero.consumer.FaultInjector
 ```
 
 Then visit the dashboard at **http://127.0.0.1:8090** to view open failures, inspect parked events, and resolve/discard failures with one click.

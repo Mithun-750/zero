@@ -12,8 +12,8 @@ import java.util.Map;
  *
  * <pre>
  * Usage:
- *   java -jar target/producer-java-1.0.0.jar           # continuous mode (default)
- *   java -jar target/producer-java-1.0.0.jar --once    # single batch then exit
+ *   java -jar target/producer-1.0.0.jar           # continuous mode (default)
+ *   java -jar target/producer-1.0.0.jar --once    # single batch then exit
  * </pre>
  */
 public final class OutboxRelayApplication {

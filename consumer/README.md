@@ -1,6 +1,6 @@
-# consumer-java
+# consumer
 
-Java Maven port of the Python payment consumer. Subscribes to Kafka `orders.created`,
+Java payment consumer. Subscribes to Kafka `orders.created`,
 processes events through a validation + apply pipeline, and writes results to PostgreSQL.
 
 ## Prerequisites
@@ -13,9 +13,9 @@ processes events through a validation + apply pipeline, and writes results to Po
 ## Build
 
 ```bash
-cd consumer-java
+cd consumer
 mvn package -q
-# produces: target/consumer-java-1.0.0.jar
+# produces: target/consumer-1.0.0.jar
 ```
 
 ## Run
@@ -25,18 +25,18 @@ mvn package -q
 From the project root:
 ```bash
 # Continuous consumer + dashboard
-mvn -pl consumer-java exec:java
+mvn -pl consumer exec:java
 
 # Poll once and exit
-mvn -pl consumer-java exec:java -Dexec.args="--once"
+mvn -pl consumer exec:java -Dexec.args="--once"
 
 # Run fault injector CLI
-mvn -pl consumer-java exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"
+mvn -pl consumer exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"
 ```
 
-Or from within `consumer-java/`:
+Or from within `consumer/`:
 ```bash
-cd consumer-java
+cd consumer
 mvn exec:java
 mvn exec:java -Dexec.args="--once"
 mvn exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"
@@ -46,10 +46,10 @@ mvn exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"
 
 ```bash
 # Continuous mode (default)
-java -jar target/consumer-java-1.0.0.jar
+java -jar target/consumer-1.0.0.jar
 
 # Poll once and exit (dev/verification)
-java -jar target/consumer-java-1.0.0.jar --once
+java -jar target/consumer-1.0.0.jar --once
 ```
 
 ## Configuration
@@ -96,7 +96,7 @@ REST dashboard runs at `http://127.0.0.1:8090` by default.
 Inject a corrupt event + valid followers to test the DLQ/block/park/resolve flow:
 
 ```bash
-java -cp target/consumer-java-1.0.0.jar com.zero.consumer.FaultInjector \
+java -cp target/consumer-1.0.0.jar com.zero.consumer.FaultInjector \
   [--order-id UUID] [--followers 2] [--corrupt-amount -50.0] [--amount 99.0]
 ```
 
@@ -112,7 +112,7 @@ java -cp target/consumer-java-1.0.0.jar com.zero.consumer.FaultInjector \
 ## Project Structure
 
 ```
-consumer-java/
+consumer/
 ├── pom.xml
 ├── README.md
 └── src/main/

@@ -166,10 +166,10 @@ INSERT INTO outbox (
 
 ## 4. Outbox Relay Producer (Java)
 
-The Java producer ([producer-java/](file:///home/mithun-750/Projects/company-training/zero/producer-java)) runs continuously to transport events from PostgreSQL to Kafka.
+The Java producer ([producer/](file:///home/mithun-750/Projects/company-training/zero/producer)) runs continuously to transport events from PostgreSQL to Kafka.
 
 ### 4.1 Polling Loop
-[OutboxRelayApplication.java](file:///home/mithun-750/Projects/company-training/zero/producer-java/src/main/java/com/zero/producer/OutboxRelayApplication.java#L49-L66) runs the poll cycle:
+[OutboxRelayApplication.java](file:///home/mithun-750/Projects/company-training/zero/producer/src/main/java/com/zero/producer/OutboxRelayApplication.java#L49-L66) runs the poll cycle:
 1. `fetchPendingEvents(batchSize)` queries the database:
    ```sql
    SELECT id, aggregate_type, aggregate_id, event_type, payload, created_at
@@ -178,10 +178,10 @@ The Java producer ([producer-java/](file:///home/mithun-750/Projects/company-tra
    ORDER BY created_at, id
    LIMIT ?
    ```
-   Implemented in [DatabaseClient.java](file:///home/mithun-750/Projects/company-training/zero/producer-java/src/main/java/com/zero/producer/DatabaseClient.java#L62-L86).
+   Implemented in [DatabaseClient.java](file:///home/mithun-750/Projects/company-training/zero/producer/src/main/java/com/zero/producer/DatabaseClient.java#L62-L86).
 
 ### 4.2 Event Envelope Construction
-[EventBuilder.java](file:///home/mithun-750/Projects/company-training/zero/producer-java/src/main/java/com/zero/producer/EventBuilder.java#L40-L88) builds the standardized CloudEvents-like envelope:
+[EventBuilder.java](file:///home/mithun-750/Projects/company-training/zero/producer/src/main/java/com/zero/producer/EventBuilder.java#L40-L88) builds the standardized CloudEvents-like envelope:
 * Separates `payment_trigger` from order attributes.
 * Formats timestamps to ISO-8601 strings.
 * Sets `source: "order-service"`, `event_version: 1`, `aggregate_type: "ORDER"`, and `aggregate_id`.
@@ -217,33 +217,33 @@ The Java producer ([producer-java/](file:///home/mithun-750/Projects/company-tra
 ```
 
 ### 4.3 Synchronous Kafka Publishing
-In [KafkaPublisher.java](file:///home/mithun-750/Projects/company-training/zero/producer-java/src/main/java/com/zero/producer/KafkaPublisher.java#L54-L62):
+In [KafkaPublisher.java](file:///home/mithun-750/Projects/company-training/zero/producer/src/main/java/com/zero/producer/KafkaPublisher.java#L54-L62):
 * The message is keyed with `aggregate_id.getBytes(StandardCharsets.UTF_8)` ensuring all events for the same order route to the same Kafka partition in strict order.
-* Producer is configured with `acks="all"` and `enable.idempotence=true` ([KafkaPublisher.java](file:///home/mithun-750/Projects/company-training/zero/producer-java/src/main/java/com/zero/producer/KafkaPublisher.java#L38-L39)).
+* Producer is configured with `acks="all"` and `enable.idempotence=true` ([KafkaPublisher.java](file:///home/mithun-750/Projects/company-training/zero/producer/src/main/java/com/zero/producer/KafkaPublisher.java#L38-L39)).
 * Blocks on `producer.send(...).get(120, TimeUnit.SECONDS)` to guarantee broker persistence before proceeding.
 
 ### 4.4 Status Transition
-* **On Success**: Calls [DatabaseClient.java:markPublished()](file:///home/mithun-750/Projects/company-training/zero/producer-java/src/main/java/com/zero/producer/DatabaseClient.java#L91-L103) executing:
+* **On Success**: Calls [DatabaseClient.java:markPublished()](file:///home/mithun-750/Projects/company-training/zero/producer/src/main/java/com/zero/producer/DatabaseClient.java#L91-L103) executing:
   ```sql
   UPDATE outbox
   SET status = 'PUBLISHED', published_at = CURRENT_TIMESTAMP, error_message = NULL
   WHERE id = ? AND status = 'PENDING'
   ```
-* **On Publish Failure**: Calls [DatabaseClient.java:recordPublishFailure()](file:///home/mithun-750/Projects/company-training/zero/producer-java/src/main/java/com/zero/producer/DatabaseClient.java#L108-L129), incrementing `retry_count` and saving the exception message while leaving the row `PENDING` for redelivery.
+* **On Publish Failure**: Calls [DatabaseClient.java:recordPublishFailure()](file:///home/mithun-750/Projects/company-training/zero/producer/src/main/java/com/zero/producer/DatabaseClient.java#L108-L129), incrementing `retry_count` and saving the exception message while leaving the row `PENDING` for redelivery.
 
 ---
 
 ## 5. Payment Consumer Pipeline (Java)
 
-The Java consumer ([consumer-java/](file:///home/mithun-750/Projects/company-training/zero/consumer-java)) processes records with manual offset commits to guarantee at-least-once processing.
+The Java consumer ([consumer/](file:///home/mithun-750/Projects/company-training/zero/consumer)) processes records with manual offset commits to guarantee at-least-once processing.
 
 ### 5.1 Consumption Loop
-[PaymentConsumerApplication.java](file:///home/mithun-750/Projects/company-training/zero/consumer-java/src/main/java/com/zero/consumer/PaymentConsumerApplication.java#L79-L109) polls the `orders.created` topic with `enable.auto.commit = false`.
+[PaymentConsumerApplication.java](file:///home/mithun-750/Projects/company-training/zero/consumer/src/main/java/com/zero/consumer/PaymentConsumerApplication.java#L79-L109) polls the `orders.created` topic with `enable.auto.commit = false`.
 * Each record passes through `pipeline.processRecord(record)`.
 * Only after a **durable outcome** is achieved (applied, duplicate, parked, or DLQ'd) does the consumer invoke `consumer.commitSync()`.
-* If [OffsetRejectException](file:///home/mithun-750/Projects/company-training/zero/consumer-java/src/main/java/com/zero/consumer/OffsetRejectException.java#L1-L10) is caught (e.g. DLQ broker write failed or DB write failed), the offset is **NOT** committed, guaranteeing redelivery.
+* If [OffsetRejectException](file:///home/mithun-750/Projects/company-training/zero/consumer/src/main/java/com/zero/consumer/OffsetRejectException.java#L1-L10) is caught (e.g. DLQ broker write failed or DB write failed), the offset is **NOT** committed, guaranteeing redelivery.
 
-### 5.2 Three-Stage Processing Pipeline ([Pipeline.java](file:///home/mithun-750/Projects/company-training/zero/consumer-java/src/main/java/com/zero/consumer/Pipeline.java#L43-L147))
+### 5.2 Three-Stage Processing Pipeline ([Pipeline.java](file:///home/mithun-750/Projects/company-training/zero/consumer/src/main/java/com/zero/consumer/Pipeline.java#L43-L147))
 
 ```
 Incoming Kafka Record
@@ -278,18 +278,18 @@ Commit Kafka Offset (commitSync)
   SELECT is_blocked FROM aggregate_processing_state
   WHERE aggregate_type = ? AND aggregate_id = ?
   ```
-  ([DatabaseClient.java](file:///home/mithun-750/Projects/company-training/zero/consumer-java/src/main/java/com/zero/consumer/DatabaseClient.java#L40-L53)).
+  ([DatabaseClient.java](file:///home/mithun-750/Projects/company-training/zero/consumer/src/main/java/com/zero/consumer/DatabaseClient.java#L40-L53)).
 * If blocked, the event is a **follower** of an unresolved poison event. To preserve strict ordering, it is parked via `db.parkEvent()` in [parked_events](file:///home/mithun-750/Projects/company-training/zero/schema.sql#L160-L176) with its `kafka_offset`.
 * The consumer commits the offset and proceeds. The follower will be replayed later in exact `kafka_offset` order when the operator resolves the poison failure.
 
 #### Stage 3: Event Validation & Atomic Apply
-[EventValidator.java](file:///home/mithun-750/Projects/company-training/zero/consumer-java/src/main/java/com/zero/consumer/EventValidator.java#L38-L133) validates domain constraints:
+[EventValidator.java](file:///home/mithun-750/Projects/company-training/zero/consumer/src/main/java/com/zero/consumer/EventValidator.java#L38-L133) validates domain constraints:
 * `event_id` and `aggregate_id` must be valid UUIDs.
 * `payment_trigger.action` must equal `"INITIATE_PAYMENT"`.
-* `payment_trigger.amount` must be a positive number (`> 0`). Non-positive amounts raise [BusinessRuleException](file:///home/mithun-750/Projects/company-training/zero/consumer-java/src/main/java/com/zero/consumer/BusinessRuleException.java#L1-L17) (permanent error).
+* `payment_trigger.amount` must be a positive number (`> 0`). Non-positive amounts raise [BusinessRuleException](file:///home/mithun-750/Projects/company-training/zero/consumer/src/main/java/com/zero/consumer/BusinessRuleException.java#L1-L17) (permanent error).
 * `currency` must be a 3-letter uppercase ISO code (e.g., `INR`).
 
-[DatabaseClient.java:applyEvent()](file:///home/mithun-750/Projects/company-training/zero/consumer-java/src/main/java/com/zero/consumer/DatabaseClient.java#L121-L176) applies the payment within an explicit JDBC transaction (`conn.setAutoCommit(false)`):
+[DatabaseClient.java:applyEvent()](file:///home/mithun-750/Projects/company-training/zero/consumer/src/main/java/com/zero/consumer/DatabaseClient.java#L121-L176) applies the payment within an explicit JDBC transaction (`conn.setAutoCommit(false)`):
 1. **Deduplication**: Checks if `event_id` exists in `processed_events`. If yes, commits and returns `"duplicate"`.
 2. **Payment Creation**: Inserts into `payments` table with `status = 'INITIATED'` and `idempotency_key = event_id`.
 3. **Ledger Record**: Inserts into `processed_events` table (`event_id`, `consumer_name`, `aggregate_id`).
@@ -301,7 +301,7 @@ Commit Kafka Offset (commitSync)
 
 When an unrecoverable failure occurs (such as a negative order amount or malformed schema):
 
-### 6.1 DLQ Publisher ([DlqPublisher.java](file:///home/mithun-750/Projects/company-training/zero/consumer-java/src/main/java/com/zero/consumer/DlqPublisher.java#L87-L152))
+### 6.1 DLQ Publisher ([DlqPublisher.java](file:///home/mithun-750/Projects/company-training/zero/consumer/src/main/java/com/zero/consumer/DlqPublisher.java#L87-L152))
 1. Publishes a self-contained diagnostic message to topic `payments.dlq`.
 2. Sets Kafka headers: `failure_class`, `consumer_name`, `event_id`, `aggregate_id`.
 3. The message body contains:
@@ -311,7 +311,7 @@ When an unrecoverable failure occurs (such as a negative order amount or malform
 4. Requires broker acknowledgement (`acks=all`) before the consumer proceeds.
 
 ### 6.2 Atomic Failure Record & Aggregate Blocking
-[DatabaseClient.java:recordFailureAndBlock()](file:///home/mithun-750/Projects/company-training/zero/consumer-java/src/main/java/com/zero/consumer/DatabaseClient.java#L462-L484) executes inside an ACID transaction:
+[DatabaseClient.java:recordFailureAndBlock()](file:///home/mithun-750/Projects/company-training/zero/consumer/src/main/java/com/zero/consumer/DatabaseClient.java#L462-L484) executes inside an ACID transaction:
 1. **Insert into `event_failures`**: Stores the failure record with `status = 'OPEN'`.
 2. **Upsert `aggregate_processing_state`**: Sets `is_blocked = TRUE`, records `blocked_reason`, and links `blocked_event_id`.
 
@@ -331,22 +331,22 @@ ON CONFLICT (aggregate_type, aggregate_id) DO UPDATE SET
 
 ## 7. Operational Dashboard & Resolution Flow
 
-The consumer embeds a Javalin HTTP server on port `8090` ([Dashboard.java](file:///home/mithun-750/Projects/company-training/zero/consumer-java/src/main/java/com/zero/consumer/Dashboard.java#L45-L182)):
+The consumer embeds a Javalin HTTP server on port `8090` ([Dashboard.java](file:///home/mithun-750/Projects/company-training/zero/consumer/src/main/java/com/zero/consumer/Dashboard.java#L45-L182)):
 
 ### 7.1 Real-Time Dashboard UI
 * Served at `GET http://127.0.0.1:8090`.
 * Displays real-time metrics (`/api/metrics`), failure lists (`/api/failures`), blocked aggregates (`/api/blocked`), parked followers (`/api/parked`), and recent payments (`/api/payments`).
 
 ### 7.2 Fault Injection CLI
-Run [FaultInjector.java](file:///home/mithun-750/Projects/company-training/zero/consumer-java/src/main/java/com/zero/consumer/FaultInjector.java#L32-L100):
+Run [FaultInjector.java](file:///home/mithun-750/Projects/company-training/zero/consumer/src/main/java/com/zero/consumer/FaultInjector.java#L32-L100):
 ```bash
-mvn -pl consumer-java exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"
+mvn -pl consumer exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"
 ```
 * Publishes a corrupt event with `amount = -50.0` followed by 2 valid follower events (`amount = 99.0`) for an existing order ID.
 * The consumer sends the corrupt event to the DLQ, blocks the aggregate, and parks both followers.
 
 ### 7.3 Resolving a Failure in One Transaction
-In [Dashboard.java:resolveFailure()](file:///home/mithun-750/Projects/company-training/zero/consumer-java/src/main/java/com/zero/consumer/Dashboard.java#L223-L300):
+In [Dashboard.java:resolveFailure()](file:///home/mithun-750/Projects/company-training/zero/consumer/src/main/java/com/zero/consumer/Dashboard.java#L223-L300):
 1. **Operator Edit**: The operator edits the payload in the UI (e.g., changes amount to `50.0`) and clicks **Apply & Unblock**.
 2. **Validation**: The fixed event is validated against business rules before opening the transaction.
 3. **Locking**: Selects the failure `FOR UPDATE` to prevent concurrent resolutions.
@@ -364,10 +364,10 @@ In [Dashboard.java:resolveFailure()](file:///home/mithun-750/Projects/company-tr
 |---|---|
 | **Build all Java modules** | `mvn clean package -DskipTests` |
 | **Generate & load orders (Python)** | `cd data-prep && uv run test-load -c 20` |
-| **Run Producer Relay (Continuous)** | `mvn -pl producer-java exec:java` |
-| **Run Producer Relay (Single batch)** | `mvn -pl producer-java exec:java -Dexec.args="--once"` |
-| **Run Consumer + Dashboard (Continuous)** | `mvn -pl consumer-java exec:java` |
-| **Run Consumer (Poll once & exit)** | `mvn -pl consumer-java exec:java -Dexec.args="--once"` |
-| **Simulate Poison Event (Fault Injector)**| `mvn -pl consumer-java exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"` |
+| **Run Producer Relay (Continuous)** | `mvn -pl producer exec:java` |
+| **Run Producer Relay (Single batch)** | `mvn -pl producer exec:java -Dexec.args="--once"` |
+| **Run Consumer + Dashboard (Continuous)** | `mvn -pl consumer exec:java` |
+| **Run Consumer (Poll once & exit)** | `mvn -pl consumer exec:java -Dexec.args="--once"` |
+| **Simulate Poison Event (Fault Injector)**| `mvn -pl consumer exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"` |
 | **Open Web Dashboard** | `http://localhost:8090` |
 

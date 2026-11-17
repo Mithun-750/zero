@@ -1,6 +1,6 @@
-# producer-java
+# producer
 
-A Java 27 / Maven outbox-relay producer that faithfully replicates the behaviour of the Python `producer/` service.
+A Java 27 / Maven outbox-relay producer that polls the PostgreSQL outbox table and publishes events to Kafka.
 
 ## What it does
 
@@ -33,14 +33,14 @@ Place a `.env` file in the **project root** (`zero/`) and the application will p
 Requires **Java 27** and **Maven 3.x** on `PATH`.
 
 ```bash
-cd producer-java
+cd producer
 mvn package
 ```
 
 The shade plugin produces a self-contained fat jar at:
 
 ```
-target/producer-java-1.0.0.jar
+target/producer-1.0.0.jar
 ```
 
 ## Run
@@ -50,15 +50,15 @@ target/producer-java-1.0.0.jar
 From the project root:
 ```bash
 # Continuous polling
-mvn -pl producer-java exec:java
+mvn -pl producer exec:java
 
 # Single batch mode
-mvn -pl producer-java exec:java -Dexec.args="--once"
+mvn -pl producer exec:java -Dexec.args="--once"
 ```
 
-Or from within `producer-java/`:
+Or from within `producer/`:
 ```bash
-cd producer-java
+cd producer
 mvn exec:java
 mvn exec:java -Dexec.args="--once"
 ```
@@ -68,13 +68,13 @@ mvn exec:java -Dexec.args="--once"
 **Continuous mode** (default — polls every `OUTBOX_POLL_INTERVAL_SECONDS` seconds):
 
 ```bash
-java -jar target/producer-java-1.0.0.jar
+java -jar target/producer-1.0.0.jar
 ```
 
 **Single-batch mode** (process one batch then exit):
 
 ```bash
-java -jar target/producer-java-1.0.0.jar --once
+java -jar target/producer-1.0.0.jar --once
 ```
 
 **Graceful shutdown**: send `SIGINT` (Ctrl-C) or `SIGTERM`; the process finishes the current batch before exiting.
@@ -82,7 +82,7 @@ java -jar target/producer-java-1.0.0.jar --once
 ## Project structure
 
 ```
-producer-java/
+producer/
 ├── pom.xml
 ├── README.md
 └── src/main/

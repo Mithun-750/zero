@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit;
  * straight to orders.created so you can watch the DLQ/block/park/resolve flow.
  *
  * Usage:
- *   java -cp consumer-java-1.0.0.jar com.zero.consumer.FaultInjector [--order-id UUID] [--followers N] [--corrupt-amount FLOAT] [--amount FLOAT]
+ *   java -cp consumer-1.0.0.jar com.zero.consumer.FaultInjector [--order-id UUID] [--followers N] [--corrupt-amount FLOAT] [--amount FLOAT]
  *
  * Mirrors Python consumer/inject.py.
  */

@@ -13,8 +13,8 @@
     <description>Parent POM for Transactional Outbox Kafka Java services</description>
 
     <modules>
-        <module>producer-java</module>
-        <module>consumer-java</module>
+        <module>producer</module>
+        <module>consumer</module>
     </modules>
 
     <properties>
