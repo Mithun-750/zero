@@ -1,6 +1,6 @@
 # End-to-End Order Processing Flow & Architecture
 
-This document describes the complete lifecycle of an order across PostgreSQL, Kafka, the Python data generation pipeline, and the Java producer and consumer microservices.
+This document describes the complete lifecycle of an order across PostgreSQL, Kafka, the Python data generation pipeline, and the Spring Boot producer and consumer microservices.
 
 ---
 
@@ -11,9 +11,9 @@ sequenceDiagram
     autonumber
     actor Client as Data Prep (Python)
     participant PG as PostgreSQL (order_db)
-    participant Relay as Producer Relay (Java)
+    participant Relay as Producer Relay (Spring Boot)
     participant Kafka as Apache Kafka (KRaft)
-    participant Consumer as Payment Consumer (Java)
+    participant Consumer as Payment Consumer (Spring Boot)
     participant DLQ as Kafka (payments.dlq)
     actor Ops as Operator Dashboard
 
@@ -24,7 +24,7 @@ sequenceDiagram
     Client->>PG: INSERT INTO order_items
     Client->>PG: COMMIT Transaction
 
-    Note over PG,Kafka: 2. Outbox Polling & Kafka Relay
+    Note over PG,Kafka: 2. Outbox Polling & Kafka Relay (@Scheduled, every 2s)
     loop Every 2s Poll Cycle
         Relay->>PG: SELECT * FROM outbox WHERE status='PENDING'
         Relay->>Relay: Build Event Envelope (EventBuilder)
@@ -33,7 +33,7 @@ sequenceDiagram
         Relay->>PG: UPDATE outbox SET status='PUBLISHED'
     end
 
-    Note over Kafka,Consumer: 3. Consumption & Business Application
+    Note over Kafka,Consumer: 3. Consumption & Business Application (manual offset commits, per-partition rewind)
     Consumer->>Kafka: poll() batch from "orders.created"
     Consumer->>PG: Check is_blocked(aggregate_id)?
     alt Aggregate is Blocked
@@ -42,25 +42,20 @@ sequenceDiagram
     else Aggregate is Healthy
         Consumer->>Consumer: Validate Envelope & Business Rules
         alt Valid Order
-            Consumer->>PG: BEGIN Transaction
             Consumer->>PG: INSERT INTO payments (status='INITIATED')
             Consumer->>PG: INSERT INTO processed_events (event_id)
-            Consumer->>PG: COMMIT Transaction
             Consumer->>Kafka: commitSync()
         else Poison / Corrupt Record (Amount <= 0 / Invalid)
             Consumer->>DLQ: publishToDlq("payments.dlq", headers, raw)
             DLQ-->>Consumer: Broker ACK
-            Consumer->>PG: BEGIN Transaction
             Consumer->>PG: INSERT INTO event_failures (status='OPEN')
             Consumer->>PG: block_aggregate(aggregate_id)
-            Consumer->>PG: COMMIT Transaction
             Consumer->>Kafka: commitSync()
         end
     end
 
     Note over Consumer,Ops: 4. Operator Resolution via UI
     Ops->>Consumer: POST /api/failures/{id}/resolve (fixed JSON)
-    Consumer->>PG: BEGIN Transaction
     Consumer->>PG: applyEvent(fixedEvent)
     Consumer->>PG: Replay parked_events in kafka_offset order
     Consumer->>PG: unblock_aggregate(aggregate_id)
@@ -168,13 +163,14 @@ INSERT INTO outbox (
 
 ---
 
-## 4. Outbox Relay Producer (Java)
+## 4. Outbox Relay Producer (Spring Boot)
 
-The Java producer ([producer/](producer)) runs continuously to transport events from PostgreSQL to Kafka.
+The Spring Boot producer ([producer-spring/](producer-spring)) runs continuously to transport events from PostgreSQL to Kafka.
 
 ### 4.1 Polling Loop
-[producer/src/main/java/com/zero/producer/OutboxRelayApplication.java](producer/src/main/java/com/zero/producer/OutboxRelayApplication.java#L49-L66) runs the poll cycle:
-1. `fetchPendingEvents(batchSize)` queries the database:
+The poll cycle runs on a Spring `@Scheduled` fixed-delay timer (default every 2 s, `app.outbox.poll-interval`) and calls:
+
+1. `OutboxRelay.processBatch()` ([producer-spring/src/main/java/com/zero/producer/service/OutboxRelay.java#L49](producer-spring/src/main/java/com/zero/producer/service/OutboxRelay.java#L49)):
    ```sql
    SELECT id, aggregate_type, aggregate_id, event_type, payload, created_at
    FROM outbox
@@ -182,10 +178,10 @@ The Java producer ([producer/](producer)) runs continuously to transport events 
    ORDER BY created_at, id
    LIMIT ?
    ```
-   Implemented in [producer/src/main/java/com/zero/producer/DatabaseClient.java](producer/src/main/java/com/zero/producer/DatabaseClient.java#L62-L86).
+   Implemented with `JdbcTemplate` in [producer-spring/src/main/java/com/zero/producer/repository/DatabaseClient.java#L62](producer-spring/src/main/java/com/zero/producer/repository/DatabaseClient.java#L62-L86).
 
 ### 4.2 Event Envelope Construction
-[producer/src/main/java/com/zero/producer/EventBuilder.java](producer/src/main/java/com/zero/producer/EventBuilder.java#L40-L88) builds the standardized CloudEvents-like envelope:
+[producer-spring/src/main/java/com/zero/producer/service/EventBuilder.java](producer-spring/src/main/java/com/zero/producer/service/EventBuilder.java#L41-L88) builds the standardized CloudEvents-like envelope:
 * Separates `payment_trigger` from order attributes.
 * Formats timestamps to ISO-8601 strings.
 * Sets `source: "order-service"`, `event_version: 1`, `aggregate_type: "ORDER"`, and `aggregate_id`.
@@ -221,50 +217,52 @@ The Java producer ([producer/](producer)) runs continuously to transport events 
 ```
 
 ### 4.3 Synchronous Kafka Publishing
-In [producer/src/main/java/com/zero/producer/KafkaPublisher.java](producer/src/main/java/com/zero/producer/KafkaPublisher.java#L54-L62):
-* The message is keyed with `aggregate_id.getBytes(StandardCharsets.UTF_8)` ensuring all events for the same order route to the same Kafka partition in strict order.
-* Producer is configured with `acks="all"` and `enable.idempotence=true` ([producer/src/main/java/com/zero/producer/KafkaPublisher.java](producer/src/main/java/com/zero/producer/KafkaPublisher.java#L38-L39)).
-* Blocks on `producer.send(...).get(120, TimeUnit.SECONDS)` to guarantee broker persistence before proceeding.
+In [producer-spring/src/main/java/com/zero/producer/kafka/KafkaPublisher.java](producer-spring/src/main/java/com/zero/producer/kafka/KafkaPublisher.java#L44-L62):
+* The message is keyed with `aggregateId` ensuring all events for the same order route to the same Kafka partition in strict order.
+* Producer is configured with `acks="all"` and `enable.idempotence=true` (`spring.kafka.producer.acks` / `spring.kafka.producer.properties.enable.idempotence` in [producer-spring/src/main/resources/application.yml](producer-spring/src/main/resources/application.yml#L18-L24)).
+* Blocks on `kafkaTemplate.send(...).get(120, TimeUnit.SECONDS)` to guarantee broker persistence before proceeding.
 
 ### 4.4 Status Transition
-* **On Success**: Calls [producer/src/main/java/com/zero/producer/DatabaseClient.java](producer/src/main/java/com/zero/producer/DatabaseClient.java#L91-L103) (`markPublished()`) executing:
+* **On Success**: Calls [producer-spring/src/main/java/com/zero/producer/repository/DatabaseClient.java](producer-spring/src/main/java/com/zero/producer/repository/DatabaseClient.java#L69-L80) (`markPublished()`) executing:
   ```sql
   UPDATE outbox
   SET status = 'PUBLISHED', published_at = CURRENT_TIMESTAMP, error_message = NULL
   WHERE id = ? AND status = 'PENDING'
   ```
-* **On Publish Failure**: Calls [producer/src/main/java/com/zero/producer/DatabaseClient.java](producer/src/main/java/com/zero/producer/DatabaseClient.java#L108-L129) (`recordPublishFailure()`), incrementing `retry_count` and saving the exception message while leaving the row `PENDING` for redelivery.
+* **On Publish Failure**: Calls [producer-spring/src/main/java/com/zero/producer/repository/DatabaseClient.java](producer-spring/src/main/java/com/zero/producer/repository/DatabaseClient.java#L82-L97) (`recordPublishFailure()`), incrementing `retry_count` and saving the exception message while leaving the row `PENDING` for redelivery.
 
 ---
 
-## 5. Payment Consumer Pipeline (Java)
+## 5. Payment Consumer Pipeline (Spring Boot)
 
-The Java consumer ([consumer/](consumer)) processes records with manual offset commits to guarantee at-least-once processing.
+The Spring Boot consumer ([consumer-spring/](consumer-spring)) processes records with manual offset commits to guarantee at-least-once processing.
 
 ### 5.1 Consumption Loop & Per-Partition Offset Management
-[consumer/src/main/java/com/zero/consumer/PaymentConsumerApplication.java](consumer/src/main/java/com/zero/consumer/PaymentConsumerApplication.java#L80-L165) polls the `orders.created` topic with `enable.auto.commit = false`.
-* **Per-Partition Batch Processing (`processBatch`)**:
-  Instead of a flat loop that commits arbitrary offsets, `processBatch` groups records by `TopicPartition`:
-  ```java
-  for (TopicPartition tp : records.partitions()) {
-      for (ConsumerRecord<byte[], byte[]> record : records.records(tp)) {
-          ...
-      }
-  }
-  ```
+The consumer is started by Spring (`ConsumerSpringApplication`) with two modes, and the raw `KafkaConsumer` is created from `KafkaProperties.buildConsumerProperties()` (`spring.kafka.consumer.*`):
+* **Continuous**: `ConsumerWorker` (a `SmartLifecycle`) starts a background thread on app startup ([consumer-spring/src/main/java/com/zero/consumer/kafka/ConsumerWorker.java#L50-L57](consumer-spring/src/main/java/com/zero/consumer/kafka/ConsumerWorker.java#L50-L57)); graceful stop on context close (`stop()` → `wakeup()`).
+* **Single Batch (`--once`)**: `OnceConsumerRunner` (an `ApplicationRunner`) processes the first non-empty batch (or waits ~3 s for group assignment to settle) and shuts the app down ([consumer-spring/src/main/java/com/zero/consumer/kafka/OnceConsumerRunner.java#L43-L77](consumer-spring/src/main/java/com/zero/consumer/kafka/OnceConsumerRunner.java#L43-L77)).
+
+**Per-Partition Batch Processing (`processBatch`)** — the offset-management logic is ported verbatim and unit-tested ([consumer-spring/src/main/java/com/zero/consumer/kafka/BatchProcessor.java#L42-L90](consumer-spring/src/main/java/com/zero/consumer/kafka/BatchProcessor.java#L42-L90); tests in [consumer-spring/src/test/java/com/zero/consumer/kafka/BatchProcessorTest.java](consumer-spring/src/test/java/com/zero/consumer/kafka/BatchProcessorTest.java)):
+```java
+for (TopicPartition tp : records.partitions()) {
+    for (ConsumerRecord<byte[], byte[]> record : records.records(tp)) {
+        ...
+    }
+}
+```
 * **Contiguous Per-Record Offset Commits**:
   Only after a durable outcome is achieved (applied, duplicate, parked, or DLQ'd) does the consumer commit the exact next offset for that partition:
   ```java
   consumer.commitSync(Collections.singletonMap(tp, new OffsetAndMetadata(record.offset() + 1)));
   ```
 * **Partition Rewind (`seek`) on Failure**:
-  If [consumer/src/main/java/com/zero/consumer/OffsetRejectException.java](consumer/src/main/java/com/zero/consumer/OffsetRejectException.java#L1-L10) is caught (e.g., DB failure or DLQ write failure):
+  If [consumer-spring/src/main/java/com/zero/consumer/exception/OffsetRejectException.java](consumer-spring/src/main/java/com/zero/consumer/exception/OffsetRejectException.java#L1-L10) is caught (e.g., DB failure or DLQ write failure):
   1. The consumer executes `consumer.seek(tp, record.offset())` to rewind Kafka's pointer back to the failed record.
   2. Stops processing further records on that specific partition for this batch (`break`).
   3. **Fault Isolation**: Other independent partitions in the same batch continue processing without interruption.
   4. Guarantees strict at-least-once delivery with zero skipped messages.
 
-### 5.2 Three-Stage Processing Pipeline ([consumer/src/main/java/com/zero/consumer/Pipeline.java](consumer/src/main/java/com/zero/consumer/Pipeline.java#L43-L147))
+### 5.2 Three-Stage Processing Pipeline ([consumer-spring/src/main/java/com/zero/consumer/service/Pipeline.java](consumer-spring/src/main/java/com/zero/consumer/service/Pipeline.java#L52-L147))
 
 ```
 Incoming Kafka Record
@@ -299,22 +297,21 @@ Commit Kafka Offset (commitSync)
   SELECT is_blocked FROM aggregate_processing_state
   WHERE aggregate_type = ? AND aggregate_id = ?
   ```
-  ([consumer/src/main/java/com/zero/consumer/DatabaseClient.java](consumer/src/main/java/com/zero/consumer/DatabaseClient.java#L40-L53)).
+  ([consumer-spring/src/main/java/com/zero/consumer/repository/DatabaseClient.java](consumer-spring/src/main/java/com/zero/consumer/repository/DatabaseClient.java#L50-L68)).
 * If blocked, the event is a **follower** of an unresolved poison event. To preserve strict ordering, it is parked via `db.parkEvent()` in [schema.sql](schema.sql#L160-L176) (`parked_events`) with its `kafka_offset`.
 * The consumer commits the offset and proceeds. The follower will be replayed later in exact `kafka_offset` order when the operator resolves the poison failure.
 
 #### Stage 3: Event Validation & Atomic Apply
-[consumer/src/main/java/com/zero/consumer/EventValidator.java](consumer/src/main/java/com/zero/consumer/EventValidator.java#L38-L133) validates domain constraints:
+[consumer-spring/src/main/java/com/zero/consumer/service/EventValidator.java](consumer-spring/src/main/java/com/zero/consumer/service/EventValidator.java#L40-L133) validates domain constraints:
 * `event_id` and `aggregate_id` must be valid UUIDs.
 * `payment_trigger.action` must equal `"INITIATE_PAYMENT"`.
-* `payment_trigger.amount` must be a positive number (`> 0`). Non-positive amounts raise [consumer/src/main/java/com/zero/consumer/BusinessRuleException.java](consumer/src/main/java/com/zero/consumer/BusinessRuleException.java#L1-L17) (permanent error).
+* `payment_trigger.amount` must be a positive number (`> 0`). Non-positive amounts raise [consumer-spring/src/main/java/com/zero/consumer/exception/BusinessRuleException.java](consumer-spring/src/main/java/com/zero/consumer/exception/BusinessRuleException.java#L1-L17) (permanent error).
 * `currency` must be a 3-letter uppercase ISO code (e.g., `INR`).
 
-[consumer/src/main/java/com/zero/consumer/DatabaseClient.java](consumer/src/main/java/com/zero/consumer/DatabaseClient.java#L121-L176) (`applyEvent()`) applies the payment within an explicit JDBC transaction (`conn.setAutoCommit(false)`):
-1. **Deduplication**: Checks if `event_id` exists in `processed_events`. If yes, commits and returns `"duplicate"`.
+[consumer-spring/src/main/java/com/zero/consumer/repository/DatabaseClient.java](consumer-spring/src/main/java/com/zero/consumer/repository/DatabaseClient.java#L137-L170) (`applyEvent()`) applies the payment atomically with `payments` + `processed_events` inserts in one Spring `@Transactional` transaction:
+1. **Deduplication**: Checks if `event_id` exists in `processed_events`. If yes, returns `"duplicate"`.
 2. **Payment Creation**: Inserts into `payments` table with `status = 'INITIATED'` and `idempotency_key = event_id`.
 3. **Ledger Record**: Inserts into `processed_events` table (`event_id`, `consumer_name`, `aggregate_id`).
-4. **Commit**: Both rows commit atomically.
 
 ---
 
@@ -322,17 +319,17 @@ Commit Kafka Offset (commitSync)
 
 When an unrecoverable failure occurs (such as a negative order amount or malformed schema):
 
-### 6.1 DLQ Publisher ([consumer/src/main/java/com/zero/consumer/DlqPublisher.java](consumer/src/main/java/com/zero/consumer/DlqPublisher.java#L87-L152))
-1. Publishes a self-contained diagnostic message to topic `payments.dlq`.
+### 6.1 DLQ Publisher ([consumer-spring/src/main/java/com/zero/consumer/kafka/DlqPublisher.java](consumer-spring/src/main/java/com/zero/consumer/kafka/DlqPublisher.java#L97-L163))
+1. Publishes a self-contained diagnostic message to topic `payments.dlq` via the dedicated DLQ `KafkaTemplate` (`client.id` suffixed `-dlq`, `acks=all` + idempotence from `spring.kafka.producer.*` — see [consumer-spring/src/main/java/com/zero/consumer/config/DlqKafkaConfig.java](consumer-spring/src/main/java/com/zero/consumer/config/DlqKafkaConfig.java)).
 2. Sets Kafka headers: `failure_class`, `consumer_name`, `event_id`, `aggregate_id`.
 3. The message body contains:
    * Original coordinates: `source_topic`, `source_partition`, `source_offset`.
    * Truncated raw payload (`raw_payload` up to 10,000 characters).
    * Exact failure reason and class (`BUSINESS_RULE` or `VALIDATION`).
-4. Requires broker acknowledgement (`acks=all`) before the consumer proceeds.
+4. Requires broker acknowledgement before the consumer proceeds.
 
 ### 6.2 Atomic Failure Record & Aggregate Blocking
-[consumer/src/main/java/com/zero/consumer/DatabaseClient.java](consumer/src/main/java/com/zero/consumer/DatabaseClient.java#L462-L484) (`recordFailureAndBlock()`) executes inside an ACID transaction:
+[consumer-spring/src/main/java/com/zero/consumer/repository/DatabaseClient.java](consumer-spring/src/main/java/com/zero/consumer/repository/DatabaseClient.java#L370-L392) (`recordFailureAndBlock()`, `@Transactional`) executes inside one ACID transaction:
 1. **Insert into `event_failures`**: Stores the failure record with `status = 'OPEN'`.
 2. **Upsert `aggregate_processing_state`**: Sets `is_blocked = TRUE`, records `blocked_reason`, and links `blocked_event_id`.
 
@@ -352,22 +349,23 @@ ON CONFLICT (aggregate_type, aggregate_id) DO UPDATE SET
 
 ## 7. Operational Dashboard & Resolution Flow
 
-The consumer embeds a Javalin HTTP server on port `8090` ([consumer/src/main/java/com/zero/consumer/Dashboard.java](consumer/src/main/java/com/zero/consumer/Dashboard.java#L45-L182)):
+The consumer embeds a Spring Boot web app on port `8090` (`server.port` / `server.address` from `DASHBOARD_PORT` / `DASHBOARD_HOST`, default `8090` / `127.0.0.1` — see [consumer-spring/src/main/resources/application.yml](consumer-spring/src/main/resources/application.yml#L32-L35)):
 
 ### 7.1 Real-Time Dashboard UI
-* Served at `GET http://127.0.0.1:8090`.
-* Displays real-time metrics (`/api/metrics`), failure lists (`/api/failures`), blocked aggregates (`/api/blocked`), parked followers (`/api/parked`), and recent payments (`/api/payments`).
+* Served at `GET http://127.0.0.1:8090` — the embedded HTML page is now a static resource: [consumer-spring/src/main/resources/static/index.html](consumer-spring/src/main/resources/static/index.html).
+* REST endpoints are `@RestController` routes in [consumer-spring/src/main/java/com/zero/consumer/controller/DashboardController.java](consumer-spring/src/main/java/com/zero/consumer/controller/DashboardController.java#L36-L260): `/api/metrics`, `/api/failures`, `/api/blocked`, `/api/parked`, `/api/payments`, `/api/ledger`, `/healthz`, `/readyz`. Display shows real-time metrics, failure lists, blocked aggregates, parked followers, and recent payments.
 
 ### 7.2 Fault Injection CLI
-Run [consumer/src/main/java/com/zero/consumer/FaultInjector.java](consumer/src/main/java/com/zero/consumer/FaultInjector.java#L32-L100):
+Run [consumer-spring/src/main/java/com/zero/consumer/cli/FaultInjector.java](consumer-spring/src/main/java/com/zero/consumer/cli/FaultInjector.java#L32) (standalone main class, not a Spring bean):
 ```bash
-mvn -pl consumer exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"
+mvn spring-boot:run -Dspring-boot.run.main-class=com.zero.consumer.cli.FaultInjector
+# custom: mvn spring-boot:run -Dspring-boot.run.main-class=com.zero.consumer.cli.FaultInjector -Dspring-boot.run.arguments="--followers 3"
 ```
 * Publishes a corrupt event with `amount = -50.0` followed by 2 valid follower events (`amount = 99.0`) for an existing order ID.
 * The consumer sends the corrupt event to the DLQ, blocks the aggregate, and parks both followers.
 
 ### 7.3 Resolving a Failure in One Transaction
-In [consumer/src/main/java/com/zero/consumer/Dashboard.java](consumer/src/main/java/com/zero/consumer/Dashboard.java#L223-L300) (`resolveFailure()`):
+In [consumer-spring/src/main/java/com/zero/consumer/service/FailureResolutionService.java](consumer-spring/src/main/java/com/zero/consumer/service/FailureResolutionService.java#L47-L128) (`resolveFailure()`, `@Transactional`):
 1. **Operator Edit**: The operator edits the payload in the UI (e.g., changes amount to `50.0`) and clicks **Apply & Unblock**.
 2. **Validation**: The fixed event is validated against business rules before opening the transaction.
 3. **Locking**: Selects the failure `FOR UPDATE` to prevent concurrent resolutions.
@@ -381,7 +379,7 @@ In [consumer/src/main/java/com/zero/consumer/Dashboard.java](consumer/src/main/j
 
 ## 8. Reliability Testing & Cluster Reconciliation (`reliability`)
 
-The `reliability` module provides an automated verification and audit suite ([reliability/](reliability)) to test cluster partition tolerance, broker failovers, and reconcile end-to-end ledger consistency.
+The `reliability` module provides an automated verification and audit suite ([reliability/](reliability)) to test cluster partition tolerance, broker failovers, and reconcile end-to-end ledger consistency. (Unchanged — still plain Java tooling.)
 
 ### 8.1 Key Reliability Operations ([ExperimentCLI.java](reliability/src/main/java/com/zero/reliability/ExperimentCLI.java))
 * **Database Snapshot (`snapshot-db`)**:
@@ -409,15 +407,15 @@ mvn -pl reliability exec:java -Dexec.args="reconcile"
 
 | Task | Command |
 |---|---|
-| **Build all Java modules** | `mvn clean package -DskipTests` |
-| **Run all unit & partition tests** | `mvn test` |
-| **Start full stack (infra + services)** | `./dev.sh` |
+| **Build both Spring Boot modules** | `mvn -f producer-spring/pom.xml package && mvn -f consumer-spring/pom.xml package` |
+| **Run all unit & integration tests** | `mvn -f producer-spring/pom.xml test && mvn -f consumer-spring/pom.xml test` |
+| **Start full stack (infra + services)** | `./dev.sh` (spring stack by default; `STACK=legacy ./dev.sh` for the old services) |
 | **Generate & load orders (Python)** | `cd data-prep && uv run test-load -c 20` |
-| **Run Producer Relay (Continuous)** | `mvn -pl producer exec:java` |
-| **Run Producer Relay (Single batch)** | `mvn -pl producer exec:java -Dexec.args="--once"` |
-| **Run Consumer + Dashboard (Continuous)** | `mvn -pl consumer exec:java` |
-| **Run Consumer (Poll once & exit)** | `mvn -pl consumer exec:java -Dexec.args="--once"` |
-| **Simulate Poison Event (Fault Injector)**| `mvn -pl consumer exec:java -Dexec.mainClass="com.zero.consumer.FaultInjector"` |
+| **Run Producer Relay (Continuous)** | `java -jar producer-spring/target/producer-spring-1.0.0.jar` |
+| **Run Producer Relay (Single batch)** | `java -jar producer-spring/target/producer-spring-1.0.0.jar --once` |
+| **Run Consumer + Dashboard (Continuous)** | `java -jar consumer-spring/target/consumer-spring-1.0.0.jar` |
+| **Run Consumer (Poll once & exit)** | `java -jar consumer-spring/target/consumer-spring-1.0.0.jar --once` |
+| **Simulate Poison Event (Fault Injector)**| `mvn -f consumer-spring/pom.xml spring-boot:run -Dspring-boot.run.main-class=com.zero.consumer.cli.FaultInjector` |
 | **Run Reliability Cluster Reconciliation**| `mvn -pl reliability exec:java -Dexec.args="reconcile"` |
 | **Open Web Dashboard** | `http://localhost:8090` |
 

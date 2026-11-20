@@ -76,3 +76,10 @@ target/
 .mvn/
 *.log
 
+.project
+*/.project
+.settings
+*/.settings
+.classpath
+*/.classpath
+
