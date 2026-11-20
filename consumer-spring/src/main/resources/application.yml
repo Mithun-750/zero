@@ -1,0 +1,48 @@
+spring:
+  application:
+    name: consumer-spring
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5434}/${POSTGRES_DB:order_db}
+    username: ${POSTGRES_USER:postgres}
+    password: ${POSTGRES_PASSWORD:postgres}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:4}
+      connection-timeout: 10000
+      data-source-properties:
+        stringtype: unspecified
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092,localhost:9094,localhost:9096}
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:payment-consumer}
+      client-id: ${KAFKA_CONSUMER_CLIENT_ID:payment-consumer}
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+    producer:
+      client-id: ${KAFKA_CONSUMER_CLIENT_ID:payment-consumer}
+      acks: all
+      retries: 2147483647
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+
+server:
+  port: ${DASHBOARD_PORT:8090}
+  address: ${DASHBOARD_HOST:127.0.0.1}
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  level:
+    org.apache.kafka: WARN
+
+app:
+  consumer:
+    # `once` is not set here: it comes from the CLI (--once) as a default property.
+    max-retries: ${CONSUMER_MAX_RETRIES:3}
+    retry-backoff-seconds: ${CONSUMER_RETRY_BACKOFF_SECONDS:0.5}
+    orders-topic: ${KAFKA_ORDERS_TOPIC:orders.created}
+    dlq-topic: ${KAFKA_DLQ_TOPIC:payments.dlq}

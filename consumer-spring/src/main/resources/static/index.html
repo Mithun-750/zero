@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>zero · payment consumer</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+         background: #0d1117; color: #c9d1d9; font-size: 13px; }
+  header { display: flex; align-items: baseline; gap: 16px;
+           padding: 14px 20px; border-bottom: 1px solid #30363d; }
+  header h1 { font-size: 15px; margin: 0; color: #58a6ff; }
+  header span { color: #8b949e; font-size: 12px; }
+  main { padding: 16px 20px; display: grid; gap: 14px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; }
+  .card .label { color: #8b949e; font-size: 11px; text-transform: uppercase; }
+  .card .value { font-size: 22px; color: #e6edf3; margin-top: 2px; }
+  .card.bad .value, .card.bad { border-color: #f85149; color: #f85149; }
+  .banner { display: none; background: #3d1214; border: 1px solid #f85149; color: #ffa3a1;
+            border-radius: 8px; padding: 10px 14px; }
+  section { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; }
+  section h2 { font-size: 12px; text-transform: uppercase; color: #8b949e; margin: 0 0 8px;
+               display: flex; align-items: center; gap: 10px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #21262d;
+           vertical-align: top; }
+  th { color: #8b949e; font-size: 11px; text-transform: uppercase; }
+  tr:last-child td { border-bottom: none; }
+  .reason { max-width: 420px; overflow-wrap: anywhere; }
+  button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+           border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; }
+  button:hover { border-color: #58a6ff; color: #58a6ff; }
+  button.danger:hover { border-color: #f85149; color: #f85149; }
+  select { background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+           border-radius: 6px; padding: 4px 8px; font: inherit; }
+  .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6);
+           align-items: center; justify-content: center; }
+  .modal .box { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+                padding: 16px; width: 640px; max-width: 92vw; }
+  .modal textarea { width: 100%; height: 260px; background: #0d1117; color: #c9d1d9;
+                    border: 1px solid #30363d; border-radius: 6px; padding: 8px;
+                    font: inherit; }
+  .modal .row { display: flex; gap: 8px; margin-top: 10px; justify-content: flex-end; }
+  .modal label { color: #8b949e; font-size: 12px; }
+  pre { background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
+        padding: 8px; overflow: auto; max-height: 220px; }
+  .muted { color: #8b949e; }
+  .status { font-weight: 700; }
+  .status.OPEN { color: #f85149; }
+  .status.RESOLVED { color: #3fb950; }
+  .status.DISCARDED { color: #d29922; }
+</style>
+</head>
+<body>
+<header>
+  <h1>zero · payment-consumer</h1>
+  <span id="uptime">uptime: —</span>
+  <span id="lag">lag: —</span>
+  <span id="refreshed"></span>
+</header>
+<main>
+  <div class="banner" id="banner"></div>
+
+  <div class="cards" id="cards"></div>
+
+  <section>
+    <h2>DLQ — failures <span class="muted" id="failureCount"></span>
+      <select id="failureFilter">
+        <option value="OPEN" selected>OPEN</option>
+        <option value="RESOLVED">RESOLVED</option>
+        <option value="DISCARDED">DISCARDED</option>
+        <option value="all">all</option>
+      </select>
+    </h2>
+    <table>
+      <thead><tr><th>failed_at</th><th>aggregate</th><th>class</th><th>reason</th><th>offset</th><th>status</th><th>actions / note</th></tr></thead>
+      <tbody id="failures"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Blocked aggregates</h2>
+    <table>
+      <thead><tr><th>aggregate_id</th><th>blocked_at</th><th>reason</th><th>blocked_event</th><th>parked</th></tr></thead>
+      <tbody id="blocked"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Parked followers</h2>
+    <table>
+      <thead><tr><th>parked_at</th><th>aggregate_id</th><th>event_id</th><th>kafka_offset</th></tr></thead>
+      <tbody id="parked"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Applied payments (latest 20)</h2>
+    <table>
+      <thead><tr><th>applied_at</th><th>order</th><th>customer</th><th>amount</th><th>status</th></tr></thead>
+      <tbody id="payments"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Event ledger — processed_events (latest 20)</h2>
+    <table>
+      <thead><tr><th>processed_at</th><th>event_id</th><th>aggregate_id</th><th>consumer</th></tr></thead>
+      <tbody id="ledger"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Live snapshot</h2>
+    <pre id="raw">loading…</pre>
+  </section>
+</main>
+
+<div class="modal" id="resolveModal">
+  <div class="box">
+    <h3>Resolve failure — edit the event, then apply</h3>
+    <div class="muted" id="resolveMeta"></div>
+    <textarea id="resolvePayload" spellcheck="false"></textarea>
+    <div class="row">
+      <button onclick="closeModal()">cancel</button>
+      <button onclick="submitResolve()">apply &amp; unblock</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="discardModal">
+  <div class="box">
+    <h3>Discard failure</h3>
+    <p class="muted">The event will not be applied. Blocked aggregate will be unblocked.</p>
+    <label><input type="checkbox" id="discardFollowers"> also discard parked followers (<span id="discardParkedCount">0</span>)</label>
+    <div class="row">
+      <button onclick="closeModal()">cancel</button>
+      <button class="danger" onclick="submitDiscard()">discard &amp; unblock</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentFailureId = null;
+
+async function jget(u) { const r = await fetch(u); if (!r.ok) throw new Error(u + ' -> ' + r.status); return r.json(); }
+
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function ts(s) { return esc(String(s ?? '').replace('T', ' ').slice(0, 19)); }
+const money = (a, c) => `${esc(a)} ${esc(c)}`;
+
+async function refresh() {
+  const filter = document.getElementById('failureFilter').value;
+  const [m, f, b, p, pay, led] = await Promise.all([
+    jget('/api/metrics'), jget('/api/failures?status=' + encodeURIComponent(filter) + '&limit=200'),
+    jget('/api/blocked'), jget('/api/parked'),
+    jget('/api/payments?limit=20'), jget('/api/ledger?limit=20'),
+  ]);
+
+  document.getElementById('uptime').textContent = 'uptime: ' + Math.floor(m.uptime_seconds / 60) + 'm';
+  const lag = m.consumer_lag || {};
+  document.getElementById('lag').textContent = 'lag: ' + (lag.total ?? (lag.note || lag.error || '—'));
+  document.getElementById('refreshed').textContent = 'synced ' + new Date().toLocaleTimeString();
+
+  const c = m.counters || {};
+  const cards = [
+    ['consumed', c.consumed ?? 0], ['applied', c.applied ?? 0], ['duplicate', c.duplicate ?? 0],
+    ['parked', c.parked ?? 0], ['failed (DLQ)', c.failed ?? 0],
+    ['success rate', (100 * (m.success_rate ?? 1)).toFixed(1) + '%'],
+    ['blocked', m.blocked_aggregates], ['open failures', m.open_failures],
+  ];
+  document.getElementById('cards').innerHTML = cards.map(([l, v]) => {
+    const bad = (l === 'blocked' || l === 'open failures') && v > 0;
+    return `<div class="card ${bad ? 'bad' : ''}"><div class="label">${l}</div><div class="value">${v}</div></div>`;
+  }).join('');
+
+  const banner = document.getElementById('banner');
+  if (m.blocked_aggregates > 0) {
+    banner.style.display = 'block';
+    banner.textContent = `⚠ ${m.blocked_aggregates} aggregate(s) blocked — follower events are parked until the DLQ failure is resolved.`;
+  } else {
+    banner.style.display = 'none';
+  }
+
+  const failures = f.failures || [];
+  document.getElementById('failureCount').textContent = `(${failures.length})`;
+  document.getElementById('failures').innerHTML = failures.map(x => `
+    <tr>
+      <td>${ts(x.created_at)}</td>
+      <td>${esc(x.aggregate_id || '—')}</td>
+      <td>${esc(x.failure_class)}</td>
+      <td class="reason">${esc(x.failure_reason)}</td>
+      <td>${x.source_partition}:${x.source_offset}</td>
+      <td class="status ${esc(x.status)}">${esc(x.status)}</td>
+      <td>${x.status === 'OPEN'
+        ? `<button onclick='openResolve(${JSON.stringify(x.id)}, ${JSON.stringify(x.raw_payload)})'>resolve…</button>
+           <button class="danger" onclick='openDiscard(${JSON.stringify(x.id)})'>discard</button>`
+        : `<span class="muted">${esc(x.resolution_note || '')} — by ${esc(x.resolved_by || '?')}</span>`}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="muted">none</td></tr>';
+
+  document.getElementById('blocked').innerHTML = (b.blocked || []).map(x => `
+    <tr>
+      <td>${esc(x.aggregate_id)}</td>
+      <td>${ts(x.blocked_at)}</td>
+      <td class="reason">${esc(x.blocked_reason || '')}</td>
+      <td>${esc(x.blocked_event_id || '—')}</td>
+      <td>${x.parked_count}</td>
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">no blocked aggregates</td></tr>';
+
+  document.getElementById('parked').innerHTML = (p.parked || []).map(x => `
+    <tr>
+      <td>${ts(x.parked_at)}</td>
+      <td>${esc(x.aggregate_id)}</td>
+      <td>${esc(x.event_id)}</td>
+      <td>${x.source_partition}:${x.kafka_offset}</td>
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">nothing parked</td></tr>';
+
+  document.getElementById('payments').innerHTML = (pay.payments || []).map(x => `
+    <tr>
+      <td>${ts(x.applied_at)}</td>
+      <td>${esc(x.order_number)}</td>
+      <td>${esc(x.customer_name)} <span class="muted">${esc(x.customer_email)}</span></td>
+      <td>${money(x.amount, x.currency)}</td>
+      <td>${esc(x.status)}</td>
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">no payments yet</td></tr>';
+
+  document.getElementById('ledger').innerHTML = (led.ledger || []).map(x => `
+    <tr>
+      <td>${ts(x.processed_at)}</td>
+      <td>${esc(x.event_id)}</td>
+      <td>${esc(x.aggregate_id)}</td>
+      <td>${esc(x.consumer_name)}</td>
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">no events processed yet</td></tr>';
+
+  document.getElementById('raw').textContent = JSON.stringify(m, null, 2);
+}
+
+document.getElementById('failureFilter').addEventListener('change', refresh);
+
+function openResolve(id, rawPayload) {
+  currentFailureId = id;
+  document.getElementById('resolveMeta').textContent = 'failure id: ' + id;
+  let pretty = rawPayload;
+  try { pretty = JSON.stringify(JSON.parse(rawPayload), null, 2); } catch (_) {}
+  document.getElementById('resolvePayload').value = pretty;
+  document.getElementById('resolveModal').style.display = 'flex';
+}
+
+async function openDiscard(id) {
+  currentFailureId = id;
+  const r = await jget('/api/parked');
+  const failure = (await jget('/api/failures?status=OPEN&limit=500')).failures.find(x => x.id === id);
+  const aggId = failure && failure.aggregate_id;
+  const n = (r.parked || []).filter(p => p.aggregate_id === aggId).length;
+  document.getElementById('discardParkedCount').textContent = n;
+  document.getElementById('discardFollowers').checked = true;
+  document.getElementById('discardModal').style.display = 'flex';
+}
+
+function closeModal() {
+  document.getElementById('resolveModal').style.display = 'none';
+  document.getElementById('discardModal').style.display = 'none';
+  currentFailureId = null;
+}
+
+async function submitResolve() {
+  let event;
+  try { event = JSON.parse(document.getElementById('resolvePayload').value); }
+  catch (e) { alert('Payload is not valid JSON: ' + e.message); return; }
+  const r = await fetch('/api/failures/' + currentFailureId + '/resolve', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({event, resolved_by: 'operator'}),
+  });
+  if (!r.ok) { alert((await r.json()).detail || 'resolve failed'); return; }
+  closeModal(); refresh();
+}
+
+async function submitDiscard() {
+  const r = await fetch('/api/failures/' + currentFailureId + '/discard', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({include_followers: document.getElementById('discardFollowers').checked, resolved_by: 'operator'}),
+  });
+  if (!r.ok) { alert((await r.json()).detail || 'discard failed'); return; }
+  closeModal(); refresh();
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
